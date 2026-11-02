@@ -96,6 +96,8 @@ After every prompt, add an entry to `ai_logs/<role>.md` (yours: `ai_logs/heurist
 
 The graders care most about **Corrected**, so keep it honest. "The AI said O-patients can receive from A donors; the exhaustive ABO test caught it" is a great entry.
 
+**Reports are the AI's job, not yours.** The context block in section 6 tells the AI to write a report to `report/04_heuristics/` after every task that creates or changes files. The report says what was done, what deviated from the plan and what to watch out for, and later AI chats read it for context. You don't write these. If the AI can't write files itself, it ends its answer with the report as a code block: save that unchanged under the path it gives, and commit it with the work.
+
 ## 4. One-time setup
 
 DonorBridge is a [uv](https://docs.astral.sh/uv/) project. uv installs Python 3.11 for you (pinned in `.python-version`) and every library at the exact version in `uv.lock`, so all five of us run identical environments. Install uv once:
@@ -178,7 +180,7 @@ Test fixtures (lead, P1), in `tests/fixtures/`:
 
 ## 6. AI context block (this is also the shared contract)
 
-Paste everything in this box at the start of **every** new AI chat. The last two lines are already filled in for you.
+Paste everything in this box at the start of **every** new AI chat. The last three lines are already filled in for you.
 
 ````text
 PROJECT CONTEXT: DonorBridge (read fully before answering)
@@ -210,6 +212,12 @@ Team rules:
 - The contract below is frozen. Code against it exactly. If it looks wrong, say so and STOP; do not
   change or extend it.
 - Only touch the files I own. Tests go in tests/unit/test_<module>.py using pytest.
+- Reports are your job, not mine. Whenever you create or change files, finish by writing a short
+  markdown report to my report folder (named at the end of this block) as NN_<topic>.md, where NN is
+  the next free number. Read the earlier reports in that folder first for context. Cover: what was
+  asked, what you did, every deviation from the request or the contract and why, things to note,
+  and next steps. The report folder is the one exception to "only touch the files I own". If you
+  cannot write files, end your answer with the report as a code block headed by its path.
 
 Shared contract (signatures only):
 
@@ -383,6 +391,7 @@ def run_grid(spec: GridSpec, out_dir: Path = Path("results"), quick: bool = Fals
 
 My role: Heuristics owner (first-come baseline, greedy, local search, branch and bound).
 I own: donorbridge/solvers/first_come.py, solvers/greedy.py, solvers/local_search.py, solvers/branch_bound.py, experiments/optimality_gap.py, experiments/ring_length.py, and their tests in tests/unit/.
+My report folder: report/04_heuristics/
 ````
 
 ## 7. Before Phase 1 (today, Mon 2 Nov: design gate)
