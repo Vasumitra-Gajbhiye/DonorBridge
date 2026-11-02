@@ -61,9 +61,9 @@ Finished early? Pair with someone who is behind, review their PR, or add unit te
 
 ## 2. Rules for every task
 
-- **Python 3.11.** Libraries: standard library, numpy, pandas, matplotlib, networkx, pulp==2.9.0, highspy, pytest. Add nothing else without asking the lead.
+- **Python 3.11, managed by uv.** Libraries: standard library, numpy, pandas, matplotlib, networkx, pulp==2.9.0, highspy, pytest. Add nothing else without asking the lead. Only the lead changes dependencies (with `uv add`), and nobody runs `pip install` in the project (see section 4).
 - **Type hints and docstrings** on every public class and function.
-- **No global random state.** Every random function takes `seed: int` or `rng: random.Random`. Never call `random.seed()` or `np.random.*` at module level. Same seed, same output, every time.
+- **No global random state.** Every random function takes `seed: int` or `rng: random.Random`. Never call `random.seed()` or `np.random.`* at module level. Same seed, same output, every time.
 - **Family ids are unique ints, not positions.** Never use an id as a list index. Use `pool.family(fid)` or a dict.
 - **Unit tests** go in `tests/unit/test_<module>.py`. Each test runs in under 1 s unless it is marked `@pytest.mark.slow`.
 - **Partial work is mergeable, fake work is not.** Anything you haven't finished keeps raising `NotImplementedError("<owner>, P<n>")`, so it shows as skipped. Never return a placeholder value: it would pass silently and break someone else's results.
@@ -100,25 +100,35 @@ The graders care most about **Corrected**, so keep it honest. "The AI said O-pat
 
 ## 4. One-time setup
 
+DonorBridge is a [uv](https://docs.astral.sh/uv/) project. uv installs Python 3.11 for you (pinned in `.python-version`) and every library at the exact version in `uv.lock`, so all five of us run identical environments. Install uv once:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                                      # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+```
+
 The lead's contract commit (Phase 0) lands on `main` by **Tue 3 Nov, 9 am**. After it lands:
 
 ```bash
 git clone <repo-url> && cd DonorBridge          # or: git pull
-python3.11 -m venv .venv
-source .venv/bin/activate                        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -e .
-pytest -q -rs                                    # stubs import; unfinished work shows as "skipped" — expected
-python -m donorbridge --help
+uv sync                                          # creates .venv with Python 3.11 and installs everything, including donorbridge itself
+uv run pytest -q -rs                             # stubs import; unfinished work shows as "skipped" — expected
+uv run python -m donorbridge --help
 ```
 
-Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
+**Running commands.** This playbook writes commands as plain `pytest ...` and `python -m donorbridge ...`. Either put `uv run` in front of each one, or activate the environment once per terminal with `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`) and type them as written. After every `git pull`, run `uv sync` again in case the lead changed a dependency.
+
+**Never `pip install` into the project.** It bypasses `uv.lock`, and your environment drifts from everyone else's. Need a library? Ask the lead, who adds it with `uv add` and commits the updated `pyproject.toml`, `uv.lock` and `requirements.txt`.
+
+No uv (for example, a grader's machine)? `requirements.txt` is exported from the lock as a fallback: create a Python 3.11 venv, then `pip install -r requirements.txt && pip install -e .`.
+
+Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment as an optional extra, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
 
 ```bash
-pip install -e ".[oracle]"
+uv sync --extra oracle
 ```
 
-If that install clashes with our dependencies, the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
+A plain `uv sync` removes kep_solver again, so run the oracle tests with `uv run --extra oracle pytest -m oracle`. If the extra clashes with our dependencies, uv refuses to lock it, and the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
 
 ## 5. Module map (who owns what)
 
@@ -126,7 +136,7 @@ Every file below exists from the lead's Phase 0 skeleton commit, as a stub that 
 
 | Path (under `donorbridge/` unless noted) | Owner | Phase | Public names |
 | --- | --- | --- | --- |
-| `pyproject.toml`, `requirements*.txt`, `.github/`, `README.md`, every `__init__.py`, `__main__.py` (CLI) | Lead | P1 | `python -m donorbridge {run,sweep,bench,results,demo}` |
+| `pyproject.toml`, `uv.lock`, `.python-version`, `requirements.txt` (exported from the lock), `.github/`, `README.md`, every `__init__.py`, `__main__.py` (CLI) | Lead | P1 | `python -m donorbridge {run,sweep,bench,results,demo}` |
 | `models.py` | Lead | P1 | `BloodGroup`, `Sex`, `Relation`, `Family`, `Pool`, `Cycle`, `Solution`, `InvalidSolutionError` |
 | `survival.py` | Lead | P1 | `SurvivalModel`, `UniformSurvival` |
 | `scoring.py` | Lead | P1 | `Scorer`, `CountScorer`, `ExpectedTransplantScorer` |
@@ -172,7 +182,7 @@ Test fixtures (lead, P1), in `tests/fixtures/`:
 
 Paste everything in this box at the start of **every** new AI chat. The last two lines are already filled in for you.
 
-````text
+```text
 PROJECT CONTEXT: DonorBridge (read fully before answering)
 
 I'm on a 5-person student team (7-week course project) building `donorbridge`, a Python 3.11
@@ -193,6 +203,8 @@ Domain:
 Team rules:
 - Python 3.11. Allowed: standard library, numpy, pandas, matplotlib, networkx (>=3.1), pulp==2.9.0,
   highspy, pytest. Nothing else.
+- The project is managed with uv. Give commands as `uv run pytest ...` and `uv run python -m donorbridge ...`.
+  Never suggest `pip install`: dependencies live in pyproject.toml / uv.lock and only the lead changes them.
 - Type hints + docstrings on every public class/function. Readable over clever: I must explain every
   line in a viva.
 - No global random state. Every random function takes `seed: int` or `rng: random.Random`.
@@ -372,14 +384,14 @@ def run_grid(spec: GridSpec, out_dir: Path = Path("results"), quick: bool = Fals
 # donorbridge/experiments/__init__.py: EXPERIMENTS: dict[str, GridSpec]   (each experiment module exposes SPEC)
 
 My role: Lead (architecture, interfaces, ILP, oracle, integration).
-I own: pyproject.toml, requirements.txt, .github/, README.md, every __init__.py, donorbridge/__main__.py, models.py, survival.py, scoring.py, solvers/base.py, solvers/__init__.py, solvers/ilp.py, oracle/glasgow.py, oracle/kep_oracle.py, oracle/crosscheck.py, experiments/answer.py, tests/conftest.py, tests/fixtures/, tests/integration/.
-````
+I own: pyproject.toml, uv.lock, .python-version, requirements.txt, .github/, README.md, every __init__.py, donorbridge/__main__.py, models.py, survival.py, scoring.py, solvers/base.py, solvers/__init__.py, solvers/ilp.py, oracle/glasgow.py, oracle/kep_oracle.py, oracle/crosscheck.py, experiments/answer.py, tests/conftest.py, tests/fixtures/, tests/integration/.
+```
 
 ## 7. Before Phase 1 (today, Mon 2 Nov: design gate)
 
 - [ ] Every teammate has committed dated pseudocode and a flowchart for each module they own in P1–P3 to `docs/design/<role>.md`. Review all four tonight. This is the 2 Nov gate.
 - [ ] Your own `docs/design/lead.md`: the ILP formulation (section "The core maths" in Plan.md), the Solver template method, and the merge order.
-- [ ] **Phase 0 tonight:** L1.0 (tooling), L1.1 (skeleton), L1.5 (fixtures) and L1.6 (`conftest.py` with `--gate`) committed **directly to `main`** by Tue 3 Nov, 9 am. With AI drafting, this is about 3 hours, and it's the highest-leverage work in the project: it is the only thing that can block all four teammates at once.
+- [ ] **Phase 0 tonight:** L1.0 (tooling), L1.1 (skeleton), L1.5 (fixtures) and L1.6 (`conftest.py` with `--gate`) committed **directly to** `main` by Tue 3 Nov, 9 am. With AI drafting, this is about 3 hours, and it's the highest-leverage work in the project: it is the only thing that can block all four teammates at once.
 - [ ] Post in the group chat: "Contract v1 lands on main Tue 9 am. Until then, finish pseudocode and list your unit-test cases."
 
 **Prompt L0.1 🧑‍🏫: design-gate review of a teammate's pseudocode**
@@ -403,16 +415,16 @@ Do not write implementation code.
 
 ## 8. Phase 1: Foundations (Tue 3 – Thu 5 Nov)
 
-**Goal:** the contract exists on `main` as importable stubs by **Tue 9 am** (Phase 0). Your own P1 modules (models, survival, scoring, Solver base, registry) are real and **merged to `main` by Wed noon**, so teammates build against real types for most of the phase.
+**Goal:** the contract exists on `main` as importable stubs by **Tue 9 am** (Phase 0). Your own P1 modules (models, survival, scoring, Solver base, registry) are real and **merged to** `main` **by Wed noon**, so teammates build against real types for most of the phase.
 
-**Branch:** Phase 0 (L1.0, L1.1, L1.5, L1.6) goes **directly to `main`**, the only time you do this. Everything else goes on `p1/lead` and is merged through PRs like everyone else's.
+**Branch:** Phase 0 (L1.0, L1.1, L1.5, L1.6) goes **directly to** `main`, the only time you do this. Everything else goes on `p1/lead` and is merged through PRs like everyone else's.
 
 ### Tasks
 
-- [ ] **L1.0** (P0) Repo tooling: `pyproject.toml` (with an `oracle` extra), `requirements.txt`, `.gitignore`, CI workflow. Run `pip freeze` and pin exact versions.
+- [ ] **L1.0** (P0) Repo tooling as a uv project: `pyproject.toml` (with an `oracle` extra and a `dev` group), `.python-version`, `uv.lock`, `requirements.txt` exported from the lock (pip fallback), `.gitignore`, CI workflow. Then follow section 4 on a fresh clone and check it works exactly as written.
 - [ ] **L1.1** (P0) Skeleton: every module in the module map, as stubs with exact signatures. Also `ai_logs/<role>.md` × 5 and `docs/design/<role>.md` × 5 (empty headers).
 - [ ] **L1.5** (P0) Fixtures: `pool_8` (from the week-1 paper exercise) with expected answers, `ring_vs_swap`, `greedy_trap`, `empty`, `no_edges`.
-- [ ] **L1.6** (P0) `tests/conftest.py`: `load_fixture(name)`, the `slow` and `oracle` markers, the `--run-slow` option, and the **stub-skip hook with `--gate`**.
+- [ ] **L1.6** (P0) `tests/conftest.py`: `load_fixture(name)`, the `slow` and `oracle` markers, the `--run-slow` option, and the **stub-skip hook with** `--gate`.
 - [ ] **L1.2** `models.py` fully implemented and unit-tested.
 - [ ] **L1.3** `survival.py` and `scoring.py` implemented and unit-tested.
 - [ ] **L1.4** `solvers/base.py` (template method) and `solvers/__init__.py` (registry) implemented and unit-tested with a dummy solver. **Open the PR for L1.2–L1.4 by Wed noon.**
@@ -422,28 +434,39 @@ Do not write implementation code.
 
 ### Prompts
 
-**L1.0 🛠: repo tooling**
+**L1.0 🛠: repo tooling (uv project)**
 
 ```text
 [context block]
 
-Task: set up repository tooling. Output each file in full, each in its own code block headed by its path.
-1. pyproject.toml: setuptools build, package `donorbridge` (find packages), requires-python >=3.11.
-   [tool.pytest.ini_options]: testpaths=["tests"], markers "slow: long cross-checks (opt-in)" and
-   "oracle: needs .venv-oracle with kep_solver".
+Task: set up repository tooling as a uv project. Output each file in full, each in its own code block
+headed by its path, then the uv commands that generate the rest.
+1. pyproject.toml: [build-system] setuptools; package `donorbridge` (find packages, include
+   donorbridge*); requires-python = ">=3.11,<3.12".
+   [project] dependencies: numpy, pandas, matplotlib, networkx>=3.1, pulp==2.9.0, highspy.
+   [dependency-groups] dev = ["pytest", "nbformat"] (uv installs the dev group by default).
    [project.optional-dependencies] oracle = ["kep_solver"] (installed into the SAME env: our
    pulp==2.9.0 pin is the version kep_solver needs).
-2. requirements.txt: numpy, pandas, matplotlib, networkx>=3.1, pulp==2.9.0, highspy, pytest, nbformat
-   (unpinned except pulp; I will pin with pip freeze).
-3. .gitignore for Python, .venv*, .ipynb_checkpoints, data/raw/.
-4. .github/workflows/ci.yml: on push and pull_request; ubuntu-latest; Python 3.11; pip cache;
-   install requirements and `pip install -e .`; run `pytest tests/unit -q` then
-   `pytest tests/integration -q -rs -m "not oracle"` (no --gate in CI: stubs show as skipped, which
-   is the progress board). Print the skip count in the job summary.
-5. Then try `pip install -e ".[oracle]"` locally and tell me how to check that it didn't change
-   any pinned version (pip freeze diff).
-Then give me the exact shell commands to create the venv, install, and pin versions.
+   [tool.pytest.ini_options]: testpaths=["tests"], markers "slow: long cross-checks (opt-in)" and
+   "oracle: needs kep_solver (uv sync --extra oracle)".
+2. .python-version containing 3.11.
+3. Commands: `uv lock`, then `uv sync`. uv.lock gets committed. If locking fails because kep_solver
+   conflicts with pulp==2.9.0, show me the exact error and stop.
+4. requirements.txt exported from the lock as a pip fallback for people without uv:
+   `uv export --format requirements-txt --no-hashes --no-emit-project -o requirements.txt`
+   (includes the dev group, not the oracle extra).
+5. .gitignore for Python, .venv*, .ipynb_checkpoints, data/raw/.
+6. .github/workflows/ci.yml: on push and pull_request; ubuntu-latest; astral-sh/setup-uv (pinned major
+   version, caching on); `uv sync --locked` (fails if uv.lock is out of date with pyproject.toml);
+   re-run the export to a temp file and diff it against requirements.txt (fails if someone forgot to
+   re-export); then `uv run pytest tests/unit -q` and
+   `uv run pytest tests/integration -q -rs -m "not oracle"` (no --gate in CI: stubs show as skipped,
+   which is the progress board). Print the skip count in the job summary.
+7. Then run `uv sync --extra oracle` and `uv run --extra oracle python -c "import kep_solver"` to
+   prove the oracle extra installs alongside pulp 2.9.0.
 ```
+
+From now on, whenever you add or change a dependency (`uv add <pkg>`, `uv add --optional oracle <pkg>`, `uv add --dev <pkg>`), re-run the export from step 4 and commit `pyproject.toml`, `uv.lock` and `requirements.txt` together. CI fails if they disagree.
 
 **L1.1 🛠: package skeleton (the contract commit)**
 
@@ -640,10 +663,10 @@ Use pytest.approx for floats. Where a test needs randomness, fix the seed.
 - [ ] **L2.0** Push `test_phase2.py` to `main` Fri 10 am (spec below).
 - [ ] **L2.1** 🧑‍🏫 `ILPSolver`: write the formulation yourself, using PuLP with CBC, scorer weights, a time limit, and solver status mapped to the `optimal` flag.
 - [ ] **L2.2** Download the Glasgow benchmark pools. Commit 10–20 small instances (≤ 300 pairs) to `data/glasgow/` with a `SOURCE.md` (CC BY 4.0 attribution). Write `load_glasgow`.
-- [ ] **L2.3** kep_solver oracle. `kep_optimum(pool, L)` converts **our** Pool into kep_solver's in-memory objects and solves it in the same environment (lazy import, so the package never needs kep_solver). Both sides solve identical input, so a mismatch is a real bug, not a format difference. **Fallback, only if `.[oracle]` clashes:** write the pool to kep_solver's file format and run it in a separate `.venv-oracle` via subprocess. The function signature doesn't change.
+- [ ] **L2.3** kep_solver oracle. `kep_optimum(pool, L)` converts **our** Pool into kep_solver's in-memory objects and solves it in the same environment (lazy import, so the package never needs kep_solver). Both sides solve identical input, so a mismatch is a real bug, not a format difference. **Fallback, only if the** `oracle` **extra won't lock:** create a separate env with `uv venv .venv-oracle --python 3.11` and `uv pip install --python .venv-oracle kep_solver pulp==2.9.0`, write the pool to kep_solver's file format and run it in that env via subprocess. The function signature doesn't change.
 - [ ] **L2.4** CLI `run`: `python -m donorbridge run [--preset india|us] [--n 100] [--seed 1] [--pool FILE] [--solver ilp] [--max-len 3] [--p 1.0] [--json]`. Prints rings, transplants, expected transplants, runtime and the optimal flag.
 - [ ] **L2.5** Help the generator owner with the calibration smoke test (US ≈ 48.5 / 58.2) if it fails.
-- [ ] Gate (Tue 6 pm): `--gate` run, plus `-m oracle` locally (CI skips kep_solver); tag `phase-2-done`.
+- [ ] Gate (Tue 6 pm): `--gate` run, plus `uv run --extra oracle pytest -m oracle` locally (CI skips kep_solver); tag `phase-2-done`.
 
 ### Prompts
 
@@ -698,22 +721,22 @@ Write tests/unit/test_glasgow.py on a tiny hand-written file in the same format.
 ```text
 [context block]
 
-Task: build the kep_solver oracle. kep_solver is installed in the same env (pip install -e ".[oracle]",
-pulp==2.9.0). Our package must import it ONLY inside kep_optimum, so everything else works without it.
+Task: build the kep_solver oracle. kep_solver is installed in the same env as an optional extra
+(uv sync --extra oracle, pulp==2.9.0). Our package must import it ONLY inside kep_optimum, so everything else works without it.
 Here is kep_solver's documentation on building an instance in Python (or loading its JSON format) and
 solving for maximum transplants with a max cycle length and no chains:
-<paste the relevant kep_solver docs / README sections, and `pip show kep_solver` version>
+<paste the relevant kep_solver docs / README sections, and `uv pip show kep_solver` version>
 1. donorbridge/oracle/kep_oracle.py: kep_optimum(pool, max_cycle_len) -> int. Convert our Pool (one donor
    per family, no altruists; edge i -> j = family i's donor compatible with family j's patient) into
    kep_solver's objects (or a temp JSON file in its input format if that's simpler), solve with cycles
    only and the given max length, return the number of transplants. If kep_solver isn't importable,
-   raise RuntimeError("pip install -e '.[oracle]'").
+   raise RuntimeError("kep_solver missing: run `uv sync --extra oracle`").
 2. tests/unit/test_kep_oracle.py, marked `oracle`: kep_optimum on the fixtures equals their known optima.
 Tell me which kep_solver calls you are unsure about so I can check them against the installed version.
 Never guess an API silently.
 ```
 
-**L2.4 🛠: CLI `run`**
+**L2.4 🛠: CLI** `run`
 
 ```text
 [context block]
@@ -843,7 +866,7 @@ finding: file, line, why it's wrong, the one-line fix. Do not comment on anythin
 
 ### Prompts
 
-**L4.1 🛠: `results` command**
+**L4.1 🛠:** `results` **command**
 
 ```text
 [context block]
@@ -904,10 +927,10 @@ Two merges: **Mon 30 Nov** (docs and deck draft) and **Sun 6 Dec** (final). Subm
 - [ ] **L5.0** Push `test_phase5.py` (release check) Tue 24 Nov.
 - [ ] **L5.1** `DESIGN.md`: merge `docs/design/*.md` under these sections: problem statement; assumptions register (generator owner leads); flowchart and pseudocode per module (dated); algorithm justification (the ladder, NP-hardness, why ILP is the oracle); limitations.
 - [ ] **L5.2** `AI_LOG.md`: merge `ai_logs/*.md` by date, with a short summary at the top (counts per mode, the five most useful corrections).
-- [ ] **L5.3** `README.md`: what it is, install, one-command demo, `results`, how to read the charts, "real statistics, simulated patients".
+- [ ] **L5.3** `README.md`: what it is, install (`uv sync`, plus the `requirements.txt` pip fallback), one-command demo, `results`, how to read the charts, "real statistics, simulated patients".
 - [ ] **L5.4** Deck outline and owner per slide (prompt below). Slides first draft by Sun 29 Nov.
 - [ ] **L5.5** Rehearsals: dry run Mon 30 Nov, then three timed runs before 7 Dec, each under 10 minutes. Clinical Q&A drill: everyone answers two questions cold.
-- [ ] **L5.6** `scripts/release_check.sh`: fresh clone → venv → install → `pytest -m "not slow"` → `demo all` → `results --quick`.
+- [ ] **L5.6** `scripts/release_check.sh`: fresh clone → `uv sync --locked` → `uv run pytest -m "not slow"` → `uv run python -m donorbridge demo all` → `uv run python -m donorbridge results --quick`. Also check the pip fallback once by hand (Python 3.11 venv → `pip install -r requirements.txt && pip install -e .` → `demo all`), since graders may not have uv.
 - [ ] **Stretch, after December:** public repo and the two-page note.
 
 ### Prompts
@@ -965,7 +988,9 @@ and tell me what a strong answer would add. Start with: "Why should a hospital t
 ## 13. If you're stuck
 
 - **A teammate stalls on recursion** (cycle finder late on Wed 4 Nov, or B&B red on Fri 13 Nov): pair with them for an hour. The cycle-finder fallback is the nested loops (`find_cycles_nested_loops`), which already exist.
-- **kep_solver clashes with our environment:** use the L2.3 fallback (`.venv-oracle` with `pulp==2.9.0`, called via subprocess). If it still fails, compare the ILP against brute force on small Glasgow sub-pools (`pool.subpool`) and note it in Limitations.
+- **Someone's environment is broken or out of date:** `uv sync`. If that doesn't fix it, delete `.venv` and run `uv sync` again. If they ran `pip install` into the project, this undoes it.
+- **CI fails on `uv sync --locked` or the requirements diff:** someone changed `pyproject.toml` without re-locking or re-exporting. Run `uv lock`, re-run the export from L1.0 and commit all three files.
+- **kep_solver clashes with our environment:** use the L2.3 fallback (`.venv-oracle` built with `uv venv`, with `pulp==2.9.0`, called via subprocess). If it still fails, compare the ILP against brute force on small Glasgow sub-pools (`pool.subpool`) and note it in Limitations.
 - **CBC is slow or crashes:** switch `backend="highs"`.
-- **A merge breaks `main`:** revert that merge commit (`git revert -m 1 <sha>`), run integration again and hand the branch back to its owner.
+- **A merge breaks** `main`**:** revert that merge commit (`git revert -m 1 <sha>`), run integration again and hand the branch back to its owner.
 - **A medical debate starts** (tissue typing, HLA): the compatibility model was frozen in week 1. Add the question to the Limitations list and move on.

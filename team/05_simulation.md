@@ -59,7 +59,7 @@ Finished early? Pair with someone who is behind, review their PR, or add unit te
 
 ## 2. Rules for every task
 
-- **Python 3.11.** Libraries: standard library, numpy, pandas, matplotlib, networkx, pulp==2.9.0, highspy, pytest. Add nothing else without asking the lead.
+- **Python 3.11, managed by uv.** Libraries: standard library, numpy, pandas, matplotlib, networkx, pulp==2.9.0, highspy, pytest. Add nothing else without asking the lead. Only the lead changes dependencies (with `uv add`), and nobody runs `pip install` in the project (see section 4).
 - **Type hints and docstrings** on every public class and function.
 - **No global random state.** Every random function takes `seed: int` or `rng: random.Random`. Never call `random.seed()` or `np.random.*` at module level. Same seed, same output, every time.
 - **Family ids are unique ints, not positions.** Never use an id as a list index. Use `pool.family(fid)` or a dict.
@@ -98,25 +98,35 @@ The graders care most about **Corrected**, so keep it honest. "The AI said O-pat
 
 ## 4. One-time setup
 
+DonorBridge is a [uv](https://docs.astral.sh/uv/) project. uv installs Python 3.11 for you (pinned in `.python-version`) and every library at the exact version in `uv.lock`, so all five of us run identical environments. Install uv once:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                                      # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+```
+
 The lead's contract commit (Phase 0) lands on `main` by **Tue 3 Nov, 9 am**. After it lands:
 
 ```bash
 git clone <repo-url> && cd DonorBridge          # or: git pull
-python3.11 -m venv .venv
-source .venv/bin/activate                        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -e .
-pytest -q -rs                                    # stubs import; unfinished work shows as "skipped" — expected
-python -m donorbridge --help
+uv sync                                          # creates .venv with Python 3.11 and installs everything, including donorbridge itself
+uv run pytest -q -rs                             # stubs import; unfinished work shows as "skipped" — expected
+uv run python -m donorbridge --help
 ```
 
-Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
+**Running commands.** This playbook writes commands as plain `pytest ...` and `python -m donorbridge ...`. Either put `uv run` in front of each one, or activate the environment once per terminal with `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`) and type them as written. After every `git pull`, run `uv sync` again in case the lead changed a dependency.
+
+**Never `pip install` into the project.** It bypasses `uv.lock`, and your environment drifts from everyone else's. Need a library? Ask the lead, who adds it with `uv add` and commits the updated `pyproject.toml`, `uv.lock` and `requirements.txt`.
+
+No uv (for example, a grader's machine)? `requirements.txt` is exported from the lock as a fallback: create a Python 3.11 venv, then `pip install -r requirements.txt && pip install -e .`.
+
+Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment as an optional extra, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
 
 ```bash
-pip install -e ".[oracle]"
+uv sync --extra oracle
 ```
 
-If that install clashes with our dependencies, the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
+A plain `uv sync` removes kep_solver again, so run the oracle tests with `uv run --extra oracle pytest -m oracle`. If the extra clashes with our dependencies, uv refuses to lock it, and the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
 
 ## 5. Module map (who owns what)
 
@@ -124,7 +134,7 @@ Every file below exists from the lead's Phase 0 skeleton commit, as a stub that 
 
 | Path (under `donorbridge/` unless noted) | Owner | Phase | Public names |
 | --- | --- | --- | --- |
-| `pyproject.toml`, `requirements*.txt`, `.github/`, `README.md`, every `__init__.py`, `__main__.py` (CLI) | Lead | P1 | `python -m donorbridge {run,sweep,bench,results,demo}` |
+| `pyproject.toml`, `uv.lock`, `.python-version`, `requirements.txt` (exported from the lock), `.github/`, `README.md`, every `__init__.py`, `__main__.py` (CLI) | Lead | P1 | `python -m donorbridge {run,sweep,bench,results,demo}` |
 | `models.py` | Lead | P1 | `BloodGroup`, `Sex`, `Relation`, `Family`, `Pool`, `Cycle`, `Solution`, `InvalidSolutionError` |
 | `survival.py` | Lead | P1 | `SurvivalModel`, `UniformSurvival` |
 | `scoring.py` | Lead | P1 | `Scorer`, `CountScorer`, `ExpectedTransplantScorer` |
@@ -191,6 +201,8 @@ Domain:
 Team rules:
 - Python 3.11. Allowed: standard library, numpy, pandas, matplotlib, networkx (>=3.1), pulp==2.9.0,
   highspy, pytest. Nothing else.
+- The project is managed with uv. Give commands as `uv run pytest ...` and `uv run python -m donorbridge ...`.
+  Never suggest `pip install`: dependencies live in pyproject.toml / uv.lock and only the lead changes them.
 - Type hints + docstrings on every public class/function. Readable over clever: I must explain every
   line in a viva.
 - No global random state. Every random function takes `seed: int` or `rng: random.Random`.
