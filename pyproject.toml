@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "donorbridge"
+version = "0.1.0"
+description = "Kidney paired exchange for India: simulated pools, ring enumeration, exact and heuristic matching."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "networkx>=3.1",
+    "pulp==2.9.0",
+    "highspy",
+]
+
+[project.optional-dependencies]
+# Installed into the same environment: kep_solver needs pulp 2.9.0, which we already pin.
+oracle = ["kep_solver"]
+
+[dependency-groups]
+dev = ["pytest", "nbformat"]
+
+[tool.setuptools.packages.find]
+include = ["donorbridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long cross-checks (opt-in)",
+    "oracle: needs kep_solver (uv sync --extra oracle)",
+]

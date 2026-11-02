@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync environment (fails if uv.lock is stale)
+        run: uv sync --locked
+
+      - name: Check requirements.txt matches uv.lock
+        # The export header records the exact command (including -o), so re-export
+        # in place with the identical command and let git report any difference.
+        run: |
+          uv export --format requirements-txt --no-hashes --no-emit-project -o requirements.txt
+          if ! git diff --exit-code -- requirements.txt; then
+            echo "::error file=requirements.txt::requirements.txt is out of date. Run: uv export --format requirements-txt --no-hashes --no-emit-project -o requirements.txt"
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: uv run pytest tests/unit -q
+
+      - name: Integration tests (stubs show as skipped)
+        run: |
+          set -o pipefail
+          uv run pytest tests/integration -q -rs -m "not oracle" | tee integration.log
+
+      - name: Skip count to job summary
+        if: always()
+        run: |
+          skipped=$(grep -oE '[0-9]+ skipped' integration.log | tail -1 | grep -oE '[0-9]+' || true)
+          {
+            echo "## Integration progress"
+            echo ""
+            echo "Skipped integration tests (not yet implemented): **${skipped:-0}**"
+          } >> "$GITHUB_STEP_SUMMARY"
