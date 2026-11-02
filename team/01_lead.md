@@ -3,16 +3,44 @@
 **Owner:** ____________ · **Role:** Lead (architecture, interfaces, ILP, oracle, integration)
 **The algorithm you present on stage:** the ILP formulation with expected-transplant weights, and why it serves as the oracle that checks everyone else.
 
-You are the critical path twice in every phase. On day 1, your contract or test file unblocks everyone. On merge day, nothing is done until you have merged and run the integration test. Protect those two moments. Teammates go first: if someone is blocked, unblocking them beats your own task list.
+You are the critical path twice in every phase. On day 1, your contract or test file unblocks everyone. Through the phase you merge green PRs within hours, and on the last day nothing is done until the `--gate` run is green. Protect those two moments. Teammates go first: if someone is blocked, unblocking them beats your own task list.
 
 This file has the same sections 1–6 as the other four playbooks, then your own phases. **Sections 8–12 also contain the full integration-test spec for each phase.** Each teammate's file lists only the checks that touch their code.
 
+## Architecture at a glance
+
+```text
+Calibration ─► SaidmanGenerator ─► Pool ─► CompatibilityGraph ─► CycleFinder ─► rings
+                                                                                 │
+              Scorer (count | expected | fair) ─► Solver (7 rungs, one base) ◄───┘
+                                                     │
+                                                     ▼
+                       Solution ─► metrics + FailureSimulator + NightBeforeSimulator
+                                                     │
+   GridSpec (a list of settings) ─► run_grid (one engine, parallel, rings cached) ─► results/<name>.csv
+                                                     │                                (one shared column set)
+                                                     ▼
+                                         answer.json + 4 charts + demos
+```
+
+Six decisions hold the design together. Each was picked over a simpler-looking or a heavier alternative:
+
+| Decision | What we do | What we rejected, and why |
+| --- | --- | --- |
+| **Contract first** | The lead commits every module as a stub with exact signatures before anyone codes. You only ever fill in your own stubs. | Agreeing interfaces as we go: that's where merge conflicts and last-minute fixes come from |
+| **One Solver base class** | Seven solvers share `Solver.solve()` (find rings → `_solve()` → score → validate). You write only `_solve()`. | Separate scripts per solver: duplicated timing, scoring and validation; no visible OOP |
+| **Scorer is passed in** | Count, expected-transplant and fairness weights are objects passed to any solver. Failure-awareness costs no extra code in the solvers. | A flag inside each solver: seven places to get it wrong |
+| **One experiment engine** | Every experiment is a list of `Setting`s run by `run_grid`. It makes the pools, finds rings once per pool, runs pools in parallel and writes the same columns every time. | One class per experiment: ten copies of the same loop and ten CSV formats to negotiate |
+| **Merge early, gate late** | Merge green work to `main` as soon as it's ready. Each phase still ends with one strict gate. | Merging everything on the last night: every integration bug lands at once |
+| **Stubs skip, the gate fails them** | An unfinished stub shows as *skipped* in the integration tests. `--gate` turns those skips into failures. | Tests that stay red until merge day: no visible progress, and CI is always red |
+
 ## 1. How we work: the phase loop
 
-We build in five phases. **Nobody starts phase N+1 until phase N is merged into `main` and `tests/integration/test_phaseN.py` is green.**
+We build in five phases. **Nobody starts phase N+1 until phase N passes its gate:** `pytest tests/unit tests/integration/test_phaseN.py --gate` is green on `main`.
 
 | Phase | Dates | The phase is done when |
 | --- | --- | --- |
+| **P0 Contract** (lead only) | Mon 2 Nov evening | Every module stub, the test configuration with the `--gate` flag, CI, and fixtures are on `main` by Tue 3 Nov, 9 am |
 | **P1 Foundations** | Tue 3 – Thu 5 Nov | Contract, data model, generator, graph + cycle finder, first-come + greedy, metrics + failure simulator all work end to end on one pool |
 | **P2 Engine v1** | Fri 6 – Tue 10 Nov | ILP matches kep_solver on Glasgow pools; brute force, local search, branch and bound v1, night-before re-solve, `python -m donorbridge run` |
 | **P3 Exact solvers + failure model** | Wed 11 – Mon 16 Nov | Matching, branch and bound with its bound, failure-aware scoring in every solver, 1,000-pool cross-check green. ◆ Gate: checks all green, 16 Nov |
@@ -24,10 +52,10 @@ Every phase runs the same seven steps:
 1. **Day 1, 10 am.** The lead pushes `tests/integration/test_phaseN.py` to `main`. That file *is* the definition of done for the phase. Read every test whose name contains your role.
 2. **Branch.** `git checkout main && git pull && git checkout -b pN/<role>` (for example `p1/generator`).
 3. **Build.** Touch only the files you own (see the module map), your unit tests, `ai_logs/<role>.md` and `docs/design/<role>.md`. Need a change in someone else's file or in the contract? Message the lead. The lead changes `main`, and you run `git merge main`.
-4. **Check locally.** `pytest tests/unit -q` and `pytest tests/integration/test_phaseN.py -k <role> -q`. Tests with `e2e` in the name only pass after the merge, so don't worry about them on your branch.
-5. **Merge day, 6 pm** (last day of the phase). Open a PR `pN/<role> → main`. The lead merges in dependency order (**lead → generator → matching → heuristics → simulation**) and runs the unit tests after each merge.
-6. **Integration run.** The lead runs `pytest tests/integration/test_phaseN.py` (plus `--run-slow` at the P3 and P4 gates). Each failure goes to the owner of the module that failed. Fixes go on `pN/fix-<topic>` branches the same evening.
-7. **Gate.** When everything is green, the lead tags `phase-N-done` and posts in the group chat. Only then does anyone start phase N+1.
+4. **Merge early.** As soon as one piece passes its unit tests, open a PR `pN/<role> → main`. CI runs on every PR, and the lead merges any green PR the same day, in any order (files never overlap, so order doesn't matter). **Aim for a first merge by the middle of the phase.** Small merges surface integration problems on day 2, not on the last night. Then `git merge main` into your branch to pick up everyone else's work.
+5. **Watch the progress board.** CI runs `test_phaseN.py` on every push to `main`. A test whose code is still a stub shows as *skipped*, not failed, so the skip count is the work left in the phase. Locally: `pytest tests/integration/test_phaseN.py -k <role> -rs`.
+6. **Last day, 6 pm: final PRs in.** The lead runs the gate: `pytest tests/unit tests/integration/test_phaseN.py --gate` (plus `--run-slow` at the P3 and P4 gates). `--gate` turns every stub-skip into a failure. Each failure goes to the owner of the module that failed, and the fix goes on a `pN/fix-<topic>` branch the same evening.
+7. **Gate passed.** With zero failures, the lead tags `phase-N-done` and posts in the group chat. Only then does anyone start phase N+1.
 
 Finished early? Pair with someone who is behind, review their PR, or add unit tests for their module. Read ahead if you like, but don't write next-phase code.
 
@@ -38,6 +66,7 @@ Finished early? Pair with someone who is behind, review their PR, or add unit te
 - **No global random state.** Every random function takes `seed: int` or `rng: random.Random`. Never call `random.seed()` or `np.random.*` at module level. Same seed, same output, every time.
 - **Family ids are unique ints, not positions.** Never use an id as a list index. Use `pool.family(fid)` or a dict.
 - **Unit tests** go in `tests/unit/test_<module>.py`. Each test runs in under 1 s unless it is marked `@pytest.mark.slow`.
+- **Partial work is mergeable, fake work is not.** Anything you haven't finished keeps raising `NotImplementedError("<owner>, P<n>")`, so it shows as skipped. Never return a placeholder value: it would pass silently and break someone else's results.
 - **The contract is frozen.** Code against the signatures in section 6 exactly. Only the lead changes them, and only on `main`.
 - **Your algorithm is yours.** Each person presents one hand-written algorithm on stage. Write that code yourself (see section 3).
 - **Commits:** small, present tense, prefixed with the phase, e.g. `P1 generator: sample PRA bands`. Never commit straight to `main`; only the lead merges.
@@ -71,7 +100,7 @@ The graders care most about **Corrected**, so keep it honest. "The AI said O-pat
 
 ## 4. One-time setup
 
-The lead's contract commit lands on `main` by **Tue 3 Nov, 12:00**. After it lands:
+The lead's contract commit (Phase 0) lands on `main` by **Tue 3 Nov, 9 am**. After it lands:
 
 ```bash
 git clone <repo-url> && cd DonorBridge          # or: git pull
@@ -79,20 +108,21 @@ python3.11 -m venv .venv
 source .venv/bin/activate                        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .
-pytest -q                                        # stubs import; most tests are skipped or fail with NotImplementedError — expected
+pytest -q -rs                                    # stubs import; unfinished work shows as "skipped" — expected
 python -m donorbridge --help
 ```
 
-Only the lead (and anyone running the oracle tests) also needs the kep_solver environment:
+Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
 
 ```bash
-python3.11 -m venv .venv-oracle
-.venv-oracle/bin/pip install -r requirements-oracle.txt    # kep_solver + pulp==2.9.0 (kep_solver breaks on PuLP 4.x)
+pip install -e ".[oracle]"
 ```
+
+If that install clashes with our dependencies, the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
 
 ## 5. Module map (who owns what)
 
-Every file below exists from the lead's P1 skeleton commit, as a stub that raises `NotImplementedError("<owner>, P<n>")`. You fill in your own stubs and never create new modules under `donorbridge/`. That rule is what makes the merges conflict-free.
+Every file below exists from the lead's Phase 0 skeleton commit, as a stub that raises `NotImplementedError("<owner>, P<n>")`. You fill in your own stubs and never create new modules under `donorbridge/`. That rule is what makes the merges conflict-free.
 
 | Path (under `donorbridge/` unless noted) | Owner | Phase | Public names |
 | --- | --- | --- | --- |
@@ -102,32 +132,32 @@ Every file below exists from the lead's P1 skeleton commit, as a stub that raise
 | `scoring.py` | Lead | P1 | `Scorer`, `CountScorer`, `ExpectedTransplantScorer` |
 | `solvers/base.py`, `solvers/__init__.py` | Lead | P1 | `Solver`, `SOLVERS`, `get_solver` |
 | `solvers/ilp.py` | Lead | P2–P3 | `ILPSolver` (`"ilp"`) |
-| `oracle/glasgow.py`, `oracle/kep_oracle.py`, `scripts/kep_oracle_runner.py` (repo root) | Lead | P2 | `load_glasgow`, `list_instances`, `pool_to_kep_json`, `kep_optimum` |
+| `oracle/glasgow.py`, `oracle/kep_oracle.py` | Lead | P2 | `load_glasgow`, `list_instances`, `kep_optimum` |
 | `oracle/crosscheck.py` | Lead | P3 | `crosscheck`, `CrosscheckReport` |
 | `experiments/answer.py` | Lead | P4 | `compute_answer` |
-| `tests/conftest.py`, `tests/fixtures/`, `tests/integration/` (repo root) | Lead | every phase | fixtures, `test_phaseN.py` |
+| `tests/conftest.py`, `tests/fixtures/`, `tests/integration/` (repo root) | Lead | P0, then every phase | `load_fixture`, the `--gate` / `--run-slow` options, `test_phaseN.py` |
 | `compatibility.py` | Generator | P1 | `blood_compatible` |
 | `generator/calibration.py` | Generator | P1–P2 | `Calibration`, `INDIA`, `US` |
 | `generator/saidman.py` | Generator | P1–P2 | `PoolGenerator`, `SaidmanGenerator`, `GenerationReport`, `make_generator` |
 | `generator/report.py` | Generator | P2 | `calibration_report` |
 | `generator/survival_models.py` | Generator | P3 | `SensitisationSurvival` |
 | `generator/regions.py` | Generator | P3 | `split_by_region` |
-| `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py` | Generator | P4 | `BloodMix`, `FemaleSensitisation`, `RegionSplit` |
+| `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py` | Generator | P4 | `SPEC` (a `GridSpec`) in each |
 | `graph.py` | Matching | P1 | `CompatibilityGraph` |
 | `cycles.py` | Matching | P1 | `CycleFinder`, `find_cycles`, `find_cycles_nested_loops` |
 | `solvers/brute_force.py` | Matching | P2 | `BruteForceSolver` (`"brute-force"`) |
 | `solvers/matching.py` | Matching | P3 | `MatchingSolver` (`"matching"`) |
-| `demos/scripts.py`, `notebooks/demo.ipynb` (repo root), `experiments/cycle_growth.py` | Matching | P4 | `DEMOS`, `demo_small`, `demo_india`, `demo_edge`, `CycleGrowth` |
+| `demos/scripts.py`, `notebooks/demo.ipynb` (repo root), `experiments/cycle_growth.py` | Matching | P4 | `DEMOS`, `demo_small`, `demo_india`, `demo_edge`; `SPEC` |
 | `solvers/first_come.py`, `solvers/greedy.py` | Heuristics | P1 | `FirstComeSolver` (`"first-come"`), `GreedySolver` (`"greedy"`) |
 | `solvers/local_search.py` | Heuristics | P2 | `LocalSearchSolver` (`"local-search"`) |
 | `solvers/branch_bound.py` | Heuristics | P2–P3 | `BranchAndBoundSolver` (`"branch-bound"`) |
-| `experiments/optimality_gap.py`, `experiments/ring_length.py` | Heuristics | P4 | `OptimalityGap`, `RingLength` |
+| `experiments/optimality_gap.py`, `experiments/ring_length.py` | Heuristics | P4 | `SPEC` in each |
 | `simulation/metrics.py` | Simulation | P1 | `PoolMetrics`, `compute_metrics` |
 | `simulation/failure.py` | Simulation | P1 | `FailureSimulator`, `FailureOutcome` |
 | `simulation/resolve.py` | Simulation | P2 | `NightBeforeSimulator`, `ResolveOutcome` |
-| `experiments/base.py`, `experiments/survival_sweep.py` | Simulation | P2–P3 | `Experiment`, `SurvivalSweep` |
-| `simulation/fairness.py`, `simulation/benchmark.py` | Simulation | P3 | `FairnessScorer`, `time_solvers` |
-| `experiments/fairness.py`, `experiments/runtime.py`, `simulation/plots.py` | Simulation | P4 | `PriceOfFairness`, `Runtime`, `make_all_figures` |
+| `experiments/grid.py` (the engine), `experiments/survival_sweep.py` | Simulation | P2–P3 | `Setting`, `GridSpec`, `ROW_COLUMNS`, `run_grid`; `SPEC` |
+| `simulation/fairness.py` | Simulation | P3 | `FairnessScorer` |
+| `experiments/fairness.py`, `experiments/runtime.py`, `simulation/plots.py` | Simulation | P4 | `SPEC` in each; `make_all_figures` |
 
 Test fixtures (lead, P1), in `tests/fixtures/`:
 
@@ -306,23 +336,51 @@ class FailureSimulator:
     def realise(self, pool: Pool, solution: Solution) -> FailureOutcome: ...       # one night-before draw
     def expected(self, pool: Pool, solution: Solution, n_trials: int) -> tuple[float, float]: ...  # (mean, 95% CI half-width)
 
-# donorbridge/experiments/base.py (simulation)
-class Experiment(ABC):
-    name: ClassVar[str]
-    def __init__(self, out_dir: Path = Path("results"), quick: bool = False, seed: int = 2026): ...
-    @abstractmethod
-    def run(self) -> "pd.DataFrame": ...      # also writes out_dir / f"{name}.csv"
-# donorbridge/experiments/__init__.py: EXPERIMENTS: dict[str, type[Experiment]]
+# donorbridge/experiments/grid.py (simulation): ONE engine runs every experiment
+@dataclass(frozen=True)
+class Setting:                    # one configuration; every field has a default
+    label: str = ""               # e.g. "two_way"; copied into the CSV
+    preset: str = "india"
+    n: int = 100
+    overrides: tuple[tuple[str, float], ...] = ()   # generator overrides, e.g. (("female_hs_share", 0.3),)
+    split_regions: bool = False   # solve each region's sub-pool separately and add up
+    solver: str | None = "ilp"    # None = only enumerate rings (timing / ring counts)
+    max_len: int = 3
+    scorer: str = "expected"      # "count" | "expected" | "fair"
+    p: float = 1.0                # survival: used by the scorer AND to evaluate every plan
+    survival: str = "uniform"     # "uniform" | "sensitisation"
+    beta: float = 0.0             # fair scorer only
+    group: str = "highly_sensitised"   # fair scorer only: "highly_sensitised" | "female"
+    time_limit_s: float | None = None
+    resolve_trials: int = 0       # > 0: mean of NightBeforeSimulator over this many draws
+@dataclass(frozen=True)
+class GridSpec:
+    name: str                     # output is results/<name>.csv
+    settings: tuple[Setting, ...]
+    n_pools: int = 20
+    quick_settings: tuple[Setting, ...] = ()   # empty = reuse settings with n capped at 40
+    quick_n_pools: int = 3
+ROW_COLUMNS: tuple[str, ...]      # EVERY experiment CSV has exactly these columns, one row per (setting, pool):
+#   experiment, label, preset, n, seed, overrides, split_regions, solver, max_len, scorer, p, survival,
+#   beta, group, objective, transplants, expected_transplants, optimal, runtime_s, enum_s,
+#   rings_2, rings_3, rings_4, hs_matched_share, female_matched_share, male_matched_share, resolve_mean
+#   (expected_transplants = ExpectedTransplantScorer(survival at p).total(plan), whatever the solver's scorer)
+def run_grid(spec: GridSpec, out_dir: Path = Path("results"), quick: bool = False,
+             seed: int = 2026, workers: int = 0) -> "pd.DataFrame": ...
+#   pool i of every setting uses seed + i (paired comparisons); rings are found once per pool and passed
+#   to every solve via cycles=; pools run in parallel (workers=0 -> os.cpu_count(), 1 -> serial, same output)
+# donorbridge/experiments/__init__.py: EXPERIMENTS: dict[str, GridSpec]   (each experiment module exposes SPEC)
 
 My role: Lead (architecture, interfaces, ILP, oracle, integration).
-I own: pyproject.toml, requirements*.txt, .github/, README.md, every __init__.py, donorbridge/__main__.py, models.py, survival.py, scoring.py, solvers/base.py, solvers/__init__.py, solvers/ilp.py, oracle/glasgow.py, oracle/kep_oracle.py, oracle/crosscheck.py, experiments/answer.py, scripts/kep_oracle_runner.py, tests/conftest.py, tests/fixtures/, tests/integration/.
+I own: pyproject.toml, requirements.txt, .github/, README.md, every __init__.py, donorbridge/__main__.py, models.py, survival.py, scoring.py, solvers/base.py, solvers/__init__.py, solvers/ilp.py, oracle/glasgow.py, oracle/kep_oracle.py, oracle/crosscheck.py, experiments/answer.py, tests/conftest.py, tests/fixtures/, tests/integration/.
 ````
 
 ## 7. Before Phase 1 (today, Mon 2 Nov: design gate)
 
 - [ ] Every teammate has committed dated pseudocode and a flowchart for each module they own in P1–P3 to `docs/design/<role>.md`. Review all four tonight. This is the 2 Nov gate.
 - [ ] Your own `docs/design/lead.md`: the ILP formulation (section "The core maths" in Plan.md), the Solver template method, and the merge order.
-- [ ] Post in the group chat: "Contract v1 lands on main Tue 12:00. Until then, finish pseudocode and list your unit-test cases."
+- [ ] **Phase 0 tonight:** L1.0 (tooling), L1.1 (skeleton), L1.5 (fixtures) and L1.6 (`conftest.py` with `--gate`) committed **directly to `main`** by Tue 3 Nov, 9 am. With AI drafting, this is about 3 hours, and it's the highest-leverage work in the project: it is the only thing that can block all four teammates at once.
+- [ ] Post in the group chat: "Contract v1 lands on main Tue 9 am. Until then, finish pseudocode and list your unit-test cases."
 
 **Prompt L0.1 🧑‍🏫: design-gate review of a teammate's pseudocode**
 
@@ -345,21 +403,22 @@ Do not write implementation code.
 
 ## 8. Phase 1: Foundations (Tue 3 – Thu 5 Nov)
 
-**Goal:** the contract exists on `main` as importable stubs by **Tue 12:00**. Your own P1 modules (models, survival, scoring, Solver base, registry, fixtures) are real by **Wed evening**, so teammates can run against real types before merge day.
+**Goal:** the contract exists on `main` as importable stubs by **Tue 9 am** (Phase 0). Your own P1 modules (models, survival, scoring, Solver base, registry) are real and **merged to `main` by Wed noon**, so teammates build against real types for most of the phase.
 
-**Branch:** commit L1.0 and L1.1 **directly to `main`** (the only time you do this). Everything else goes on `p1/lead`.
+**Branch:** Phase 0 (L1.0, L1.1, L1.5, L1.6) goes **directly to `main`**, the only time you do this. Everything else goes on `p1/lead` and is merged through PRs like everyone else's.
 
 ### Tasks
 
-- [ ] **L1.0** Repo tooling: `pyproject.toml`, `requirements.txt`, `requirements-oracle.txt`, `.gitignore`, CI workflow. Run `pip freeze` and pin exact versions.
-- [ ] **L1.1** Skeleton: every module in the module map, as stubs with exact signatures. Also `ai_logs/<role>.md` × 5 and `docs/design/<role>.md` × 5 (empty headers). **Push to `main` by Tue 12:00 as "P1 lead: contract v1".**
+- [ ] **L1.0** (P0) Repo tooling: `pyproject.toml` (with an `oracle` extra), `requirements.txt`, `.gitignore`, CI workflow. Run `pip freeze` and pin exact versions.
+- [ ] **L1.1** (P0) Skeleton: every module in the module map, as stubs with exact signatures. Also `ai_logs/<role>.md` × 5 and `docs/design/<role>.md` × 5 (empty headers).
+- [ ] **L1.5** (P0) Fixtures: `pool_8` (from the week-1 paper exercise) with expected answers, `ring_vs_swap`, `greedy_trap`, `empty`, `no_edges`.
+- [ ] **L1.6** (P0) `tests/conftest.py`: `load_fixture(name)`, the `slow` and `oracle` markers, the `--run-slow` option, and the **stub-skip hook with `--gate`**.
 - [ ] **L1.2** `models.py` fully implemented and unit-tested.
 - [ ] **L1.3** `survival.py` and `scoring.py` implemented and unit-tested.
-- [ ] **L1.4** `solvers/base.py` (template method) and `solvers/__init__.py` (registry) implemented and unit-tested with a dummy solver.
-- [ ] **L1.5** Fixtures: `pool_8` (from the week-1 paper exercise) with expected answers, `ring_vs_swap`, `greedy_trap`, `empty`, `no_edges`. Push these to `main` on Tue too, since teammates' unit tests use them.
-- [ ] **L1.6** `tests/conftest.py`: a `load_fixture(name)` helper, `slow` and `oracle` markers, and a `--run-slow` option.
-- [ ] **L1.7** `tests/integration/test_phase1.py` (spec below). Push to `main` Tue afternoon.
-- [ ] Merge day (Thu 6 pm): merge the five PRs in order, run integration, assign fixes, tag `phase-1-done`.
+- [ ] **L1.4** `solvers/base.py` (template method) and `solvers/__init__.py` (registry) implemented and unit-tested with a dummy solver. **Open the PR for L1.2–L1.4 by Wed noon.**
+- [ ] **L1.7** `tests/integration/test_phase1.py` (spec below). Push to `main` Tue 10 am.
+- [ ] Every day: merge green PRs within a few hours and keep CI on `main` green.
+- [ ] Gate (Thu 6 pm): `--gate` run, assign fixes, tag `phase-1-done`.
 
 ### Prompts
 
@@ -372,13 +431,17 @@ Task: set up repository tooling. Output each file in full, each in its own code 
 1. pyproject.toml: setuptools build, package `donorbridge` (find packages), requires-python >=3.11.
    [tool.pytest.ini_options]: testpaths=["tests"], markers "slow: long cross-checks (opt-in)" and
    "oracle: needs .venv-oracle with kep_solver".
+   [project.optional-dependencies] oracle = ["kep_solver"] (installed into the SAME env: our
+   pulp==2.9.0 pin is the version kep_solver needs).
 2. requirements.txt: numpy, pandas, matplotlib, networkx>=3.1, pulp==2.9.0, highspy, pytest, nbformat
    (unpinned except pulp; I will pin with pip freeze).
-3. requirements-oracle.txt: kep_solver and pulp==2.9.0 (kep_solver breaks on PuLP 4.x).
-4. .gitignore for Python, .venv*, .ipynb_checkpoints, data/raw/.
-5. .github/workflows/ci.yml: on push and pull_request; ubuntu-latest; Python 3.11; pip cache;
+3. .gitignore for Python, .venv*, .ipynb_checkpoints, data/raw/.
+4. .github/workflows/ci.yml: on push and pull_request; ubuntu-latest; Python 3.11; pip cache;
    install requirements and `pip install -e .`; run `pytest tests/unit -q` then
-   `pytest tests/integration -q -m "not slow and not oracle"`.
+   `pytest tests/integration -q -rs -m "not oracle"` (no --gate in CI: stubs show as skipped, which
+   is the progress board). Print the skip count in the job summary.
+5. Then try `pip install -e ".[oracle]"` locally and tell me how to check that it didn't change
+   any pinned version (pip freeze diff).
 Then give me the exact shell commands to create the venv, install, and pin versions.
 ```
 
@@ -398,10 +461,13 @@ same file. Use the module map below. For EVERY file:
 - Each Solver subclass: subclass Solver, set `name`, `exact`, `supported_lengths` ClassVars
   (matching: (2,), exact=True; brute-force, branch-bound, ilp: exact=True; first-come, greedy,
   local-search: exact=False), stub `_solve`.
-- Each Experiment subclass: subclass Experiment, set `name` (snake_case of the file), stub `run`.
+- experiments/grid.py: Setting and GridSpec dataclasses written in full (they are the contract),
+  ROW_COLUMNS written in full, run_grid stubbed.
+- Every other experiments/<x>.py: just `SPEC = GridSpec(name="<x>", settings=())` with a comment
+  "Owner: <role>, filled in P<n>". (answer.py instead stubs compute_answer.)
 - solvers/__init__.py: SOLVERS dict with all seven names -> classes; get_solver(name, **kwargs)
   raising KeyError listing valid names.
-- experiments/__init__.py: EXPERIMENTS dict of all Experiment subclasses.
+- experiments/__init__.py: EXPERIMENTS = {m.SPEC.name: m.SPEC for m in <every experiment module>}.
 - __main__.py: argparse with subcommands run, sweep, bench, results, demo. Each prints
   "not implemented yet (P<n>)" and exits with code 2. Keep it tiny; I'll fill it in later.
 - Every __init__.py re-exports the public names of its package, so imports never fail.
@@ -419,16 +485,29 @@ Extra signatures not in the contract (use exactly these):
   resolve: Solution | None, final_transplants: int);
   class NightBeforeSimulator: __init__(self, solver: Solver, survival: SurvivalModel, seed: int); run(self, pool: Pool) -> ResolveOutcome
 - simulation/fairness.py: class FairnessScorer(ExpectedTransplantScorer): __init__(self, survival: SurvivalModel | float = 1.0, beta: float = 0.0, group: str = "highly_sensitised")
-- simulation/benchmark.py: time_solvers(solver_names: list[str], sizes: list[int], n_pools: int, seed: int, max_cycle_len: int = 3, time_limit_s: float = 60.0) -> pd.DataFrame
 - simulation/plots.py: make_all_figures(results_dir: Path = Path("results")) -> list[Path]
 - oracle/glasgow.py: list_instances(directory: Path) -> list[Path]; load_glasgow(path: Path) -> Pool
-- oracle/kep_oracle.py: pool_to_kep_json(pool: Pool) -> dict; kep_optimum(pool: Pool, max_cycle_len: int) -> int
+- oracle/kep_oracle.py: kep_optimum(pool: Pool, max_cycle_len: int) -> int   (imports kep_solver lazily inside the function)
 - oracle/crosscheck.py: @dataclass CrosscheckReport(n_pools: int, mismatches: list[dict]); crosscheck(n_pools: int, seed: int, sizes: tuple[int, ...] = (8, 10, 12, 20, 30)) -> CrosscheckReport
 - experiments/answer.py: compute_answer(results_dir: Path = Path("results"), threshold: float = 0.05) -> dict
 - demos/scripts.py: demo_small() -> None; demo_india() -> None; demo_edge() -> None; DEMOS: dict[str, Callable[[], None]]
 ```
 
 After it lands: `python -c "import donorbridge, donorbridge.solvers, donorbridge.experiments"`. Commit, push to `main`, and post in the group chat.
+
+**L1.6 🛠: conftest with the stub-skip hook (Phase 0)**
+
+```text
+[context block]
+
+Task: write tests/conftest.py.
+1. load_fixture(name) -> Pool loading tests/fixtures/<name>.json; load_expected(name) -> dict.
+2. Command-line options: --run-slow (without it, tests marked slow are skipped) and --gate.
+3. A pytest_runtest_makereport hook: if a test's call phase raised NotImplementedError and --gate
+   is NOT set, rewrite the report to "skipped" with reason "stub: <exception message>" (the message
+   names owner and phase). With --gate, leave it as a failure. Explain how the hook works in 3 lines.
+4. A tiny self-test in tests/unit/test_conftest_gate.py using pytester that proves both behaviours.
+```
 
 **L1.2 🛠: models.py**
 
@@ -548,7 +627,7 @@ Use pytest.approx for floats. Where a test needs randomness, fix the seed.
 | `test_p1_e2e_pipeline_india_100` | generate → find_cycles → greedy → validate → metrics → simulate, < 10 s |
 | `test_p1_e2e_solver_names_resolve` | Every name resolves via `get_solver`; first-come and greedy solve a pool |
 
-**Done when:** `pytest tests/unit tests/integration/test_phase1.py` is green on `main` and you've tagged `phase-1-done`.
+**Done when:** `pytest tests/unit tests/integration/test_phase1.py --gate` is green on `main` and you've tagged `phase-1-done`.
 
 ---
 
@@ -561,10 +640,10 @@ Use pytest.approx for floats. Where a test needs randomness, fix the seed.
 - [ ] **L2.0** Push `test_phase2.py` to `main` Fri 10 am (spec below).
 - [ ] **L2.1** 🧑‍🏫 `ILPSolver`: write the formulation yourself, using PuLP with CBC, scorer weights, a time limit, and solver status mapped to the `optimal` flag.
 - [ ] **L2.2** Download the Glasgow benchmark pools. Commit 10–20 small instances (≤ 300 pairs) to `data/glasgow/` with a `SOURCE.md` (CC BY 4.0 attribution). Write `load_glasgow`.
-- [ ] **L2.3** kep_solver oracle. `pool_to_kep_json` exports **our** Pool in kep_solver's input format. `scripts/kep_oracle_runner.py` runs inside `.venv-oracle`, and `kep_optimum` calls it via subprocess. Because both sides then solve identical input, a mismatch is a real bug, not a format difference.
+- [ ] **L2.3** kep_solver oracle. `kep_optimum(pool, L)` converts **our** Pool into kep_solver's in-memory objects and solves it in the same environment (lazy import, so the package never needs kep_solver). Both sides solve identical input, so a mismatch is a real bug, not a format difference. **Fallback, only if `.[oracle]` clashes:** write the pool to kep_solver's file format and run it in a separate `.venv-oracle` via subprocess. The function signature doesn't change.
 - [ ] **L2.4** CLI `run`: `python -m donorbridge run [--preset india|us] [--n 100] [--seed 1] [--pool FILE] [--solver ilp] [--max-len 3] [--p 1.0] [--json]`. Prints rings, transplants, expected transplants, runtime and the optimal flag.
 - [ ] **L2.5** Help the generator owner with the calibration smoke test (US ≈ 48.5 / 58.2) if it fails.
-- [ ] Merge day (Tue 6 pm): merge, run integration (including `-m oracle` locally), tag `phase-2-done`.
+- [ ] Gate (Tue 6 pm): `--gate` run, plus `-m oracle` locally (CI skips kep_solver); tag `phase-2-done`.
 
 ### Prompts
 
@@ -619,20 +698,19 @@ Write tests/unit/test_glasgow.py on a tiny hand-written file in the same format.
 ```text
 [context block]
 
-Task: build the kep_solver oracle. kep_solver lives in a separate venv (.venv-oracle) because it
-needs pulp==2.9.0; our package must never import it.
-Here is kep_solver's documentation on its input file format and how to solve for maximum
-transplants with a max cycle length (no chains):
-<paste the relevant kep_solver docs / README sections>
-1. donorbridge/oracle/kep_oracle.py:
-   - pool_to_kep_json(pool) -> dict in kep_solver's JSON input format (one donor per family, no altruists).
-   - kep_optimum(pool, max_cycle_len) -> int: writes the JSON to a temp file, runs
-     `.venv-oracle/bin/python scripts/kep_oracle_runner.py <file> <max_len>` via subprocess with a
-     timeout, parses one integer from stdout. Raise a clear error if .venv-oracle is missing.
-2. scripts/kep_oracle_runner.py: standalone (imports only kep_solver + stdlib); prints the optimum
-   number of transplants with cycles only, max length = argv[2], chains disabled.
-3. A pytest mark `oracle` on any test that calls kep_optimum.
+Task: build the kep_solver oracle. kep_solver is installed in the same env (pip install -e ".[oracle]",
+pulp==2.9.0). Our package must import it ONLY inside kep_optimum, so everything else works without it.
+Here is kep_solver's documentation on building an instance in Python (or loading its JSON format) and
+solving for maximum transplants with a max cycle length and no chains:
+<paste the relevant kep_solver docs / README sections, and `pip show kep_solver` version>
+1. donorbridge/oracle/kep_oracle.py: kep_optimum(pool, max_cycle_len) -> int. Convert our Pool (one donor
+   per family, no altruists; edge i -> j = family i's donor compatible with family j's patient) into
+   kep_solver's objects (or a temp JSON file in its input format if that's simpler), solve with cycles
+   only and the given max length, return the number of transplants. If kep_solver isn't importable,
+   raise RuntimeError("pip install -e '.[oracle]'").
+2. tests/unit/test_kep_oracle.py, marked `oracle`: kep_optimum on the fixtures equals their known optima.
 Tell me which kep_solver calls you are unsure about so I can check them against the installed version.
+Never guess an API silently.
 ```
 
 **L2.4 🛠: CLI `run`**
@@ -668,7 +746,7 @@ Write tests/unit/test_cli.py using subprocess with a fixture pool.
 | `test_p2_heuristics_never_beat_ilp` | 20 pools × 50: first-come, greedy, local-search ≤ ILP (+1e-9); local-search ≥ greedy |
 | `test_p2_heuristics_bnb_v1_equals_ilp_small` | 20 pools × 15, L=3, Count: B&B == ILP and `optimal is True` |
 | `test_p2_simulation_resolve_properties` | Same seed: final transplants ≥ first-draw transplants; no family transplanted twice; re-solve uses only families not transplanted |
-| `test_p2_simulation_experiment_quick` | `SurvivalSweep(quick=True, out_dir=tmp).run()` returns the agreed columns and writes the CSV |
+| `test_p2_simulation_grid_engine` | `run_grid(survival_sweep.SPEC, tmp, quick=True)` returns exactly `ROW_COLUMNS`, writes the CSV, and gives identical rows with `workers=1` and `workers=2` |
 | `test_p2_e2e_cli_every_solver` | CLI `run --n 30` with first-come, greedy, local-search, brute-force (n=12), branch-bound, ilp |
 
 ---
@@ -743,7 +821,7 @@ finding: file, line, why it's wrong, the one-line fix. Do not comment on anythin
 | `test_p3_heuristics_bnb_time_limit` | n=200, `time_limit_s=1`: returns a valid solution in < 1.5 s with `optimal is False` |
 | `test_p3_simulation_prototype_table` (slow) | Survival sweep at p ∈ {1.0, 0.7, 0.5} within ±3 of the prototype table (2-way and failure-aware 3-way); count-max 3-way < 2-way at p = 0.5 |
 | `test_p3_simulation_fairness_scorer` | β=0 gives the same objective as Expected; β=2 matches ≥ as many highly sensitised patients on 20 pools |
-| `test_p3_simulation_benchmark_harness` | `time_solvers(["greedy","ilp"], [20, 40], 2, seed)` returns rows with `solver, n, median_s` |
+| `test_p3_simulation_grid_features` | A small spec covering `split_regions`, `scorer="fair"`, `survival="sensitisation"`, `solver=None` and `resolve_trials=5` runs, and every row has `ROW_COLUMNS` with no unexpected NaNs |
 
 **Gate decision, 16 Nov.** If B&B or blossom matching is still red, apply the Plan.md cut lines in order: drop the web viewer, then chains, then the multi-round simulation, then the hand-written blossom (keep augmenting-path and flag `optimal=None`), then B&B. **Never cut** failure-aware scoring, the brute-force/kep_solver cross-checks or the edge-case demo.
 
@@ -755,8 +833,8 @@ finding: file, line, why it's wrong, the one-line fix. Do not comment on anythin
 
 ### Tasks
 
-- [ ] **L4.0** Push `test_phase4.py` Tue 10 am. Agree CSV column names with each experiment owner **that morning** (put them in the test).
-- [ ] **L4.1** CLI `results [--quick] [--only NAME]`: run every `EXPERIMENTS` entry, then `compute_answer`, then `make_all_figures`. Print timings. `sweep` = only `survival_sweep`; `bench` keeps `--crosscheck` and gains `--runtime`.
+- [ ] **L4.0** Push `test_phase4.py` Tue 10 am. There are no columns to negotiate: every CSV uses `ROW_COLUMNS`, which has been fixed since P0. Instead, review each owner's `SPEC` that morning (settings, pool counts, time limits) so the full run fits in about an hour on one laptop.
+- [ ] **L4.1** CLI `results [--quick] [--only NAME] [--workers K]`: `run_grid` every `EXPERIMENTS` spec, then `compute_answer`, then `make_all_figures`. Print timings. `sweep` = `--only survival_sweep`; `bench` keeps `--crosscheck`.
 - [ ] **L4.2** 🧑‍🏫 `experiments/answer.py`: from `survival_sweep.csv`, find the survival rate p* below which failure-aware 3-way adds < 5% over 2-way. Interpolate linearly between grid points and write `results/answer.json` with `threshold_p`, the gain table and a one-sentence answer.
 - [ ] **L4.3** Wire `demo [small|india|edge|all]` to `demos.DEMOS`.
 - [ ] **L4.4** Review every experiment's seeds and pool counts (20 pools per setting minimum, seeds documented).
@@ -770,14 +848,15 @@ finding: file, line, why it's wrong, the one-line fix. Do not comment on anythin
 ```text
 [context block]
 
-Task: implement `results`, `sweep` and `bench --runtime` in donorbridge/__main__.py.
-results: for each name, cls in EXPERIMENTS (or only --only NAME): cls(out_dir, quick, seed).run(), timing
-each; then experiments.answer.compute_answer(out_dir) (writes answer.json); then
-simulation.plots.make_all_figures(out_dir) (the survival chart marks p* from answer.json); print a summary table (experiment, rows, seconds) and the answer sentence. --out DIR (default results),
---seed (default 2026), --quick. A failure in one experiment is reported and the others still run;
-exit 1 at the end if any failed.
-sweep: same but only "survival_sweep". bench --runtime: calls simulation.benchmark.time_solvers with
-defaults and writes results/runtime.csv.
+Task: implement `results` and `sweep` in donorbridge/__main__.py.
+results: for each name, spec in EXPERIMENTS (or only --only NAME):
+run_grid(spec, out_dir, quick, seed, workers), timing each; then
+experiments.answer.compute_answer(out_dir) (writes answer.json); then
+simulation.plots.make_all_figures(out_dir) (the survival chart marks p* from answer.json).
+Print a summary table (experiment, rows, seconds) and the answer sentence. Flags: --out DIR (default
+results), --seed (default 2026), --quick, --workers K (default 0 = all cores). A failure in one
+experiment is reported and the others still run; exit 1 at the end if any failed.
+sweep: same as `results --only survival_sweep`.
 ```
 
 **L4.2 🧑‍🏫: the answer**
@@ -786,9 +865,9 @@ defaults and writes results/runtime.csv.
 [context block]
 
 I'm computing the project's headline number myself; review my method, don't write it.
-Data: results/survival_sweep.csv has one row per pool: (p, policy, seed, n, planned_transplants,
-expected_transplants, resolve_mean) with policy in {"two_way", "three_way_failure_aware",
-"three_way_count_max"}. I average expected_transplants over pools per (p, policy).
+Data: results/survival_sweep.csv uses our shared ROW_COLUMNS, one row per (setting, pool); the policy
+is in `label` ∈ {"two_way", "three_way_failure_aware", "three_way_count_max"}. I average
+expected_transplants over pools per (p, label).
 My method: gain(p) = FA3(p)/TWO(p) - 1; p* = the p where gain crosses 0.05, by linear interpolation
 between the two grid points that straddle it.
 1. Is linear interpolation defensible on a 0.1-spaced grid? Should I refine the grid near p*?
@@ -802,13 +881,14 @@ between the two grid points that straddle it.
 
 | Test | Checks |
 | --- | --- |
-| `test_p4_e2e_results_quick` | `results --quick --out tmp` exits 0 in < 5 min; every expected CSV, the 4 PNGs and `answer.json` exist |
+| `test_p4_e2e_results_quick` | `results --quick --out tmp` exits 0 in < 5 min; one CSV per `EXPERIMENTS` entry, each with exactly `ROW_COLUMNS`; the 4 PNGs and `answer.json` exist |
+| `test_p4_e2e_every_spec_nonempty` | Every `SPEC` has ≥ 1 setting and ≥ 1 quick setting (no stub `settings=()` left) |
 | `test_p4_lead_answer_json` | `0.5 < threshold_p < 1.0`; sentence is a non-empty string; gain table has every p |
-| `test_p4_simulation_fa_never_below_two_way` | survival_sweep: for every pool and p, FA3 expected ≥ 2-way expected (exact property: every 2-way plan is feasible for FA3) |
-| `test_p4_simulation_count_max_equals_fa_at_p1` | At p = 1.0 the two 3-way policies are equal |
-| `test_p4_generator_csvs` | blood_mix, female_sensitisation, regions CSVs have the agreed columns; national pool ≥ four regional pools |
+| `test_p4_simulation_fa_never_below_two_way` | survival_sweep: for every (seed, p), FA3 `expected_transplants` ≥ 2-way (exact property: every 2-way plan is feasible for FA3) |
+| `test_p4_simulation_count_max_equals_fa_at_p1` | At p = 1.0 the two 3-way labels give equal expected transplants |
+| `test_p4_generator_specs` | regions: national ≥ regional for every (seed, p); blood_mix has both presets; female_sensitisation has all four shares |
 | `test_p4_matching_demos_run` | `demo all` exits 0; the edge demo output contains "re-solve" |
-| `test_p4_heuristics_gap_and_ring_length` | gap ≥ 0 everywhere; ring_length mean L=4 ≥ L=3 ≥ L=2 |
+| `test_p4_heuristics_gap_and_ring_length` | optimality_gap: every heuristic's objective ≤ the ILP's for the same (seed, n, p); ring_length: mean L=4 ≥ L=3 ≥ L=2 |
 | `test_p4_simulation_figures_exist` | 4 non-empty PNGs (survival, blood_mix, fairness, runtime) |
 
 ---
@@ -885,7 +965,7 @@ and tell me what a strong answer would add. Start with: "Why should a hospital t
 ## 13. If you're stuck
 
 - **A teammate stalls on recursion** (cycle finder late on Wed 4 Nov, or B&B red on Fri 13 Nov): pair with them for an hour. The cycle-finder fallback is the nested loops (`find_cycles_nested_loops`), which already exist.
-- **kep_solver won't install:** keep it in `.venv-oracle` with `pulp==2.9.0`. If it still fails, compare the ILP against brute force on small Glasgow sub-pools (`pool.subpool`) and note it in Limitations.
+- **kep_solver clashes with our environment:** use the L2.3 fallback (`.venv-oracle` with `pulp==2.9.0`, called via subprocess). If it still fails, compare the ILP against brute force on small Glasgow sub-pools (`pool.subpool`) and note it in Limitations.
 - **CBC is slow or crashes:** switch `backend="highs"`.
 - **A merge breaks `main`:** revert that merge commit (`git revert -m 1 <sha>`), run integration again and hand the branch back to its owner.
 - **A medical debate starts** (tissue typing, HLA): the compatibility model was frozen in week 1. Add the question to the Limitations list and move on.

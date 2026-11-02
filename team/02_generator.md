@@ -5,12 +5,40 @@
 
 Every number in the project flows through your code. If the generator is off, every chart is off. Your two superpowers are **citations** (every number in `calibration.py` names its source) and **checks** (the US preset reproduces the published Saidman benchmark).
 
+## Architecture at a glance
+
+```text
+Calibration ─► SaidmanGenerator ─► Pool ─► CompatibilityGraph ─► CycleFinder ─► rings
+                                                                                 │
+              Scorer (count | expected | fair) ─► Solver (7 rungs, one base) ◄───┘
+                                                     │
+                                                     ▼
+                       Solution ─► metrics + FailureSimulator + NightBeforeSimulator
+                                                     │
+   GridSpec (a list of settings) ─► run_grid (one engine, parallel, rings cached) ─► results/<name>.csv
+                                                     │                                (one shared column set)
+                                                     ▼
+                                         answer.json + 4 charts + demos
+```
+
+Six decisions hold the design together. Each was picked over a simpler-looking or a heavier alternative:
+
+| Decision | What we do | What we rejected, and why |
+| --- | --- | --- |
+| **Contract first** | The lead commits every module as a stub with exact signatures before anyone codes. You only ever fill in your own stubs. | Agreeing interfaces as we go: that's where merge conflicts and last-minute fixes come from |
+| **One Solver base class** | Seven solvers share `Solver.solve()` (find rings → `_solve()` → score → validate). You write only `_solve()`. | Separate scripts per solver: duplicated timing, scoring and validation; no visible OOP |
+| **Scorer is passed in** | Count, expected-transplant and fairness weights are objects passed to any solver. Failure-awareness costs no extra code in the solvers. | A flag inside each solver: seven places to get it wrong |
+| **One experiment engine** | Every experiment is a list of `Setting`s run by `run_grid`. It makes the pools, finds rings once per pool, runs pools in parallel and writes the same columns every time. | One class per experiment: ten copies of the same loop and ten CSV formats to negotiate |
+| **Merge early, gate late** | Merge green work to `main` as soon as it's ready. Each phase still ends with one strict gate. | Merging everything on the last night: every integration bug lands at once |
+| **Stubs skip, the gate fails them** | An unfinished stub shows as *skipped* in the integration tests. `--gate` turns those skips into failures. | Tests that stay red until merge day: no visible progress, and CI is always red |
+
 ## 1. How we work: the phase loop
 
-We build in five phases. **Nobody starts phase N+1 until phase N is merged into `main` and `tests/integration/test_phaseN.py` is green.**
+We build in five phases. **Nobody starts phase N+1 until phase N passes its gate:** `pytest tests/unit tests/integration/test_phaseN.py --gate` is green on `main`.
 
 | Phase | Dates | The phase is done when |
 | --- | --- | --- |
+| **P0 Contract** (lead only) | Mon 2 Nov evening | Every module stub, the test configuration with the `--gate` flag, CI, and fixtures are on `main` by Tue 3 Nov, 9 am |
 | **P1 Foundations** | Tue 3 – Thu 5 Nov | Contract, data model, generator, graph + cycle finder, first-come + greedy, metrics + failure simulator all work end to end on one pool |
 | **P2 Engine v1** | Fri 6 – Tue 10 Nov | ILP matches kep_solver on Glasgow pools; brute force, local search, branch and bound v1, night-before re-solve, `python -m donorbridge run` |
 | **P3 Exact solvers + failure model** | Wed 11 – Mon 16 Nov | Matching, branch and bound with its bound, failure-aware scoring in every solver, 1,000-pool cross-check green. ◆ Gate: checks all green, 16 Nov |
@@ -22,10 +50,10 @@ Every phase runs the same seven steps:
 1. **Day 1, 10 am.** The lead pushes `tests/integration/test_phaseN.py` to `main`. That file *is* the definition of done for the phase. Read every test whose name contains your role.
 2. **Branch.** `git checkout main && git pull && git checkout -b pN/<role>` (for example `p1/generator`).
 3. **Build.** Touch only the files you own (see the module map), your unit tests, `ai_logs/<role>.md` and `docs/design/<role>.md`. Need a change in someone else's file or in the contract? Message the lead. The lead changes `main`, and you run `git merge main`.
-4. **Check locally.** `pytest tests/unit -q` and `pytest tests/integration/test_phaseN.py -k <role> -q`. Tests with `e2e` in the name only pass after the merge, so don't worry about them on your branch.
-5. **Merge day, 6 pm** (last day of the phase). Open a PR `pN/<role> → main`. The lead merges in dependency order (**lead → generator → matching → heuristics → simulation**) and runs the unit tests after each merge.
-6. **Integration run.** The lead runs `pytest tests/integration/test_phaseN.py` (plus `--run-slow` at the P3 and P4 gates). Each failure goes to the owner of the module that failed. Fixes go on `pN/fix-<topic>` branches the same evening.
-7. **Gate.** When everything is green, the lead tags `phase-N-done` and posts in the group chat. Only then does anyone start phase N+1.
+4. **Merge early.** As soon as one piece passes its unit tests, open a PR `pN/<role> → main`. CI runs on every PR, and the lead merges any green PR the same day, in any order (files never overlap, so order doesn't matter). **Aim for a first merge by the middle of the phase.** Small merges surface integration problems on day 2, not on the last night. Then `git merge main` into your branch to pick up everyone else's work.
+5. **Watch the progress board.** CI runs `test_phaseN.py` on every push to `main`. A test whose code is still a stub shows as *skipped*, not failed, so the skip count is the work left in the phase. Locally: `pytest tests/integration/test_phaseN.py -k <role> -rs`.
+6. **Last day, 6 pm: final PRs in.** The lead runs the gate: `pytest tests/unit tests/integration/test_phaseN.py --gate` (plus `--run-slow` at the P3 and P4 gates). `--gate` turns every stub-skip into a failure. Each failure goes to the owner of the module that failed, and the fix goes on a `pN/fix-<topic>` branch the same evening.
+7. **Gate passed.** With zero failures, the lead tags `phase-N-done` and posts in the group chat. Only then does anyone start phase N+1.
 
 Finished early? Pair with someone who is behind, review their PR, or add unit tests for their module. Read ahead if you like, but don't write next-phase code.
 
@@ -36,6 +64,7 @@ Finished early? Pair with someone who is behind, review their PR, or add unit te
 - **No global random state.** Every random function takes `seed: int` or `rng: random.Random`. Never call `random.seed()` or `np.random.*` at module level. Same seed, same output, every time.
 - **Family ids are unique ints, not positions.** Never use an id as a list index. Use `pool.family(fid)` or a dict.
 - **Unit tests** go in `tests/unit/test_<module>.py`. Each test runs in under 1 s unless it is marked `@pytest.mark.slow`.
+- **Partial work is mergeable, fake work is not.** Anything you haven't finished keeps raising `NotImplementedError("<owner>, P<n>")`, so it shows as skipped. Never return a placeholder value: it would pass silently and break someone else's results.
 - **The contract is frozen.** Code against the signatures in section 6 exactly. Only the lead changes them, and only on `main`.
 - **Your algorithm is yours.** Each person presents one hand-written algorithm on stage. Write that code yourself (see section 3).
 - **Commits:** small, present tense, prefixed with the phase, e.g. `P1 generator: sample PRA bands`. Never commit straight to `main`; only the lead merges.
@@ -69,7 +98,7 @@ The graders care most about **Corrected**, so keep it honest. "The AI said O-pat
 
 ## 4. One-time setup
 
-The lead's contract commit lands on `main` by **Tue 3 Nov, 12:00**. After it lands:
+The lead's contract commit (Phase 0) lands on `main` by **Tue 3 Nov, 9 am**. After it lands:
 
 ```bash
 git clone <repo-url> && cd DonorBridge          # or: git pull
@@ -77,20 +106,21 @@ python3.11 -m venv .venv
 source .venv/bin/activate                        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .
-pytest -q                                        # stubs import; most tests are skipped or fail with NotImplementedError — expected
+pytest -q -rs                                    # stubs import; unfinished work shows as "skipped" — expected
 python -m donorbridge --help
 ```
 
-Only the lead (and anyone running the oracle tests) also needs the kep_solver environment:
+Only the lead (and anyone running the oracle tests) also needs kep_solver. It goes into the **same** environment, because our ILP already pins pulp==2.9.0, the version kep_solver needs (it breaks on PuLP 4.x):
 
 ```bash
-python3.11 -m venv .venv-oracle
-.venv-oracle/bin/pip install -r requirements-oracle.txt    # kep_solver + pulp==2.9.0 (kep_solver breaks on PuLP 4.x)
+pip install -e ".[oracle]"
 ```
+
+If that install clashes with our dependencies, the lead switches to the fallback in the lead playbook (L2.3): a separate `.venv-oracle` called via subprocess. Nobody else needs to change anything.
 
 ## 5. Module map (who owns what)
 
-Every file below exists from the lead's P1 skeleton commit, as a stub that raises `NotImplementedError("<owner>, P<n>")`. You fill in your own stubs and never create new modules under `donorbridge/`. That rule is what makes the merges conflict-free.
+Every file below exists from the lead's Phase 0 skeleton commit, as a stub that raises `NotImplementedError("<owner>, P<n>")`. You fill in your own stubs and never create new modules under `donorbridge/`. That rule is what makes the merges conflict-free.
 
 | Path (under `donorbridge/` unless noted) | Owner | Phase | Public names |
 | --- | --- | --- | --- |
@@ -100,32 +130,32 @@ Every file below exists from the lead's P1 skeleton commit, as a stub that raise
 | `scoring.py` | Lead | P1 | `Scorer`, `CountScorer`, `ExpectedTransplantScorer` |
 | `solvers/base.py`, `solvers/__init__.py` | Lead | P1 | `Solver`, `SOLVERS`, `get_solver` |
 | `solvers/ilp.py` | Lead | P2–P3 | `ILPSolver` (`"ilp"`) |
-| `oracle/glasgow.py`, `oracle/kep_oracle.py`, `scripts/kep_oracle_runner.py` (repo root) | Lead | P2 | `load_glasgow`, `list_instances`, `pool_to_kep_json`, `kep_optimum` |
+| `oracle/glasgow.py`, `oracle/kep_oracle.py` | Lead | P2 | `load_glasgow`, `list_instances`, `kep_optimum` |
 | `oracle/crosscheck.py` | Lead | P3 | `crosscheck`, `CrosscheckReport` |
 | `experiments/answer.py` | Lead | P4 | `compute_answer` |
-| `tests/conftest.py`, `tests/fixtures/`, `tests/integration/` (repo root) | Lead | every phase | fixtures, `test_phaseN.py` |
+| `tests/conftest.py`, `tests/fixtures/`, `tests/integration/` (repo root) | Lead | P0, then every phase | `load_fixture`, the `--gate` / `--run-slow` options, `test_phaseN.py` |
 | `compatibility.py` | Generator | P1 | `blood_compatible` |
 | `generator/calibration.py` | Generator | P1–P2 | `Calibration`, `INDIA`, `US` |
 | `generator/saidman.py` | Generator | P1–P2 | `PoolGenerator`, `SaidmanGenerator`, `GenerationReport`, `make_generator` |
 | `generator/report.py` | Generator | P2 | `calibration_report` |
 | `generator/survival_models.py` | Generator | P3 | `SensitisationSurvival` |
 | `generator/regions.py` | Generator | P3 | `split_by_region` |
-| `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py` | Generator | P4 | `BloodMix`, `FemaleSensitisation`, `RegionSplit` |
+| `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py` | Generator | P4 | `SPEC` (a `GridSpec`) in each |
 | `graph.py` | Matching | P1 | `CompatibilityGraph` |
 | `cycles.py` | Matching | P1 | `CycleFinder`, `find_cycles`, `find_cycles_nested_loops` |
 | `solvers/brute_force.py` | Matching | P2 | `BruteForceSolver` (`"brute-force"`) |
 | `solvers/matching.py` | Matching | P3 | `MatchingSolver` (`"matching"`) |
-| `demos/scripts.py`, `notebooks/demo.ipynb` (repo root), `experiments/cycle_growth.py` | Matching | P4 | `DEMOS`, `demo_small`, `demo_india`, `demo_edge`, `CycleGrowth` |
+| `demos/scripts.py`, `notebooks/demo.ipynb` (repo root), `experiments/cycle_growth.py` | Matching | P4 | `DEMOS`, `demo_small`, `demo_india`, `demo_edge`; `SPEC` |
 | `solvers/first_come.py`, `solvers/greedy.py` | Heuristics | P1 | `FirstComeSolver` (`"first-come"`), `GreedySolver` (`"greedy"`) |
 | `solvers/local_search.py` | Heuristics | P2 | `LocalSearchSolver` (`"local-search"`) |
 | `solvers/branch_bound.py` | Heuristics | P2–P3 | `BranchAndBoundSolver` (`"branch-bound"`) |
-| `experiments/optimality_gap.py`, `experiments/ring_length.py` | Heuristics | P4 | `OptimalityGap`, `RingLength` |
+| `experiments/optimality_gap.py`, `experiments/ring_length.py` | Heuristics | P4 | `SPEC` in each |
 | `simulation/metrics.py` | Simulation | P1 | `PoolMetrics`, `compute_metrics` |
 | `simulation/failure.py` | Simulation | P1 | `FailureSimulator`, `FailureOutcome` |
 | `simulation/resolve.py` | Simulation | P2 | `NightBeforeSimulator`, `ResolveOutcome` |
-| `experiments/base.py`, `experiments/survival_sweep.py` | Simulation | P2–P3 | `Experiment`, `SurvivalSweep` |
-| `simulation/fairness.py`, `simulation/benchmark.py` | Simulation | P3 | `FairnessScorer`, `time_solvers` |
-| `experiments/fairness.py`, `experiments/runtime.py`, `simulation/plots.py` | Simulation | P4 | `PriceOfFairness`, `Runtime`, `make_all_figures` |
+| `experiments/grid.py` (the engine), `experiments/survival_sweep.py` | Simulation | P2–P3 | `Setting`, `GridSpec`, `ROW_COLUMNS`, `run_grid`; `SPEC` |
+| `simulation/fairness.py` | Simulation | P3 | `FairnessScorer` |
+| `experiments/fairness.py`, `experiments/runtime.py`, `simulation/plots.py` | Simulation | P4 | `SPEC` in each; `make_all_figures` |
 
 Test fixtures (lead, P1), in `tests/fixtures/`:
 
@@ -304,13 +334,40 @@ class FailureSimulator:
     def realise(self, pool: Pool, solution: Solution) -> FailureOutcome: ...       # one night-before draw
     def expected(self, pool: Pool, solution: Solution, n_trials: int) -> tuple[float, float]: ...  # (mean, 95% CI half-width)
 
-# donorbridge/experiments/base.py (simulation)
-class Experiment(ABC):
-    name: ClassVar[str]
-    def __init__(self, out_dir: Path = Path("results"), quick: bool = False, seed: int = 2026): ...
-    @abstractmethod
-    def run(self) -> "pd.DataFrame": ...      # also writes out_dir / f"{name}.csv"
-# donorbridge/experiments/__init__.py: EXPERIMENTS: dict[str, type[Experiment]]
+# donorbridge/experiments/grid.py (simulation): ONE engine runs every experiment
+@dataclass(frozen=True)
+class Setting:                    # one configuration; every field has a default
+    label: str = ""               # e.g. "two_way"; copied into the CSV
+    preset: str = "india"
+    n: int = 100
+    overrides: tuple[tuple[str, float], ...] = ()   # generator overrides, e.g. (("female_hs_share", 0.3),)
+    split_regions: bool = False   # solve each region's sub-pool separately and add up
+    solver: str | None = "ilp"    # None = only enumerate rings (timing / ring counts)
+    max_len: int = 3
+    scorer: str = "expected"      # "count" | "expected" | "fair"
+    p: float = 1.0                # survival: used by the scorer AND to evaluate every plan
+    survival: str = "uniform"     # "uniform" | "sensitisation"
+    beta: float = 0.0             # fair scorer only
+    group: str = "highly_sensitised"   # fair scorer only: "highly_sensitised" | "female"
+    time_limit_s: float | None = None
+    resolve_trials: int = 0       # > 0: mean of NightBeforeSimulator over this many draws
+@dataclass(frozen=True)
+class GridSpec:
+    name: str                     # output is results/<name>.csv
+    settings: tuple[Setting, ...]
+    n_pools: int = 20
+    quick_settings: tuple[Setting, ...] = ()   # empty = reuse settings with n capped at 40
+    quick_n_pools: int = 3
+ROW_COLUMNS: tuple[str, ...]      # EVERY experiment CSV has exactly these columns, one row per (setting, pool):
+#   experiment, label, preset, n, seed, overrides, split_regions, solver, max_len, scorer, p, survival,
+#   beta, group, objective, transplants, expected_transplants, optimal, runtime_s, enum_s,
+#   rings_2, rings_3, rings_4, hs_matched_share, female_matched_share, male_matched_share, resolve_mean
+#   (expected_transplants = ExpectedTransplantScorer(survival at p).total(plan), whatever the solver's scorer)
+def run_grid(spec: GridSpec, out_dir: Path = Path("results"), quick: bool = False,
+             seed: int = 2026, workers: int = 0) -> "pd.DataFrame": ...
+#   pool i of every setting uses seed + i (paired comparisons); rings are found once per pool and passed
+#   to every solve via cycles=; pools run in parallel (workers=0 -> os.cpu_count(), 1 -> serial, same output)
+# donorbridge/experiments/__init__.py: EXPERIMENTS: dict[str, GridSpec]   (each experiment module exposes SPEC)
 
 My role: Generator owner (pool generator, India/US calibration, sensitisation and spouse rules).
 I own: donorbridge/compatibility.py, generator/calibration.py, generator/saidman.py, generator/report.py, generator/survival_models.py, generator/regions.py, experiments/blood_mix.py, experiments/female_sensitisation.py, experiments/regions.py, and their tests in tests/unit/.
@@ -344,7 +401,7 @@ Here is my pseudocode for the pool generator (dated). Don't write code. Please:
 **Goal:** `make_generator("india").generate(100, seed=1)` returns a valid, deterministic, realistic `Pool`, and the US preset exists with Saidman's numbers.
 
 **Files:** `compatibility.py`, `generator/calibration.py`, `generator/saidman.py`, `tests/unit/test_compatibility.py`, `tests/unit/test_generator.py`.
-**Branch:** `p1/generator` (after the lead's contract commit, Tue 12:00).
+**Branch:** `p1/generator` (after the lead's contract commit, Tue 9 am).
 
 ### Agreed shapes (inside your files, so you design them, but stick to these names)
 
@@ -485,7 +542,7 @@ Each test < 1 s; mark anything slower @pytest.mark.slow.
 
 `test_p1_generator_deterministic`, `test_p1_generator_pool_shape`, `test_p1_generator_selection_effect`, `test_p1_generator_report_consistent`, plus `test_p1_matching_dfs_equals_nested_loops` and `test_p1_e2e_pipeline_india_100`, which use your pools. Run them with `pytest tests/integration/test_phase1.py -k generator`.
 
-**Hand-off:** once your branch has a working `generate`, post in the group chat. The matching, heuristics and simulation owners will use your pools on their branches by `git merge p1/generator` (read-only use).
+**Hand-off:** once your branch has a working `generate`, open a PR right away. Once it is on `main`, everyone else gets real pools with `git merge main`.
 
 ---
 
@@ -626,46 +683,39 @@ if CI is slower — use an env var).
 
 ## 11. Phase 4: Experiments (Tue 17 – Sun 22 Nov) · ◆ feature freeze Mon 23 Nov
 
-**Goal:** three experiments that answer three of the Plan.md "decisions to lock in" rows: India vs US mix, women and sensitisation, and one pool vs many. Each one writes a tidy CSV that the simulation owner turns into charts.
+**Goal:** three experiments that answer three of the Plan.md "decisions to lock in" rows: India vs US mix, women and sensitisation, and one pool vs many.
 
-**Files:** `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py`.
+**Files:** `experiments/blood_mix.py`, `experiments/female_sensitisation.py`, `experiments/regions.py`. Each is just `SPEC = GridSpec(...)`, about 15 lines. You write **no loops, no CSV code and no column lists**: the simulation owner's `run_grid` engine (merged in P2) generates the pools, caches the rings, solves in parallel and writes the shared `ROW_COLUMNS`. Your effort goes into choosing the right settings and reading the results.
 
-On Tue 17 Nov, 10 am, confirm the CSV columns below with the lead and the simulation owner. They go into `test_phase4.py`.
-
-| Experiment (`name`) | Settings (full / quick) | CSV columns (one row per pool per setting) |
+| `SPEC.name` | Settings (full: 20 pools; quick: 3 pools) | Expressed as `Setting`s |
 | --- | --- | --- |
-| `BloodMix` (`blood_mix`) | preset ∈ {india, us} × max_len ∈ {2, 3} × p ∈ {1.0, 0.8, 0.6}; 20 pools × 100 / 3 pools × 40 | `preset, max_len, p, seed, n, transplants, expected_transplants` |
-| `FemaleSensitisation` (`female_sensitisation`) | female_hs_share ∈ {0.1, 0.2, 0.3, 0.4}, ILP L=3, p ∈ {1.0, 0.8}; 20 × 100 / 3 × 40 | `female_hs_share, p, seed, transplants, female_matched_share, male_matched_share, hs_matched_share` |
-| `RegionSplit` (`regions`) | national vs 4 regions, ILP L=3, p ∈ {1.0, 0.8}; 20 × 200 / 3 × 60 | `setting, p, seed, transplants` (setting ∈ {national, regional}; regional = sum over the 4 sub-pools) |
+| `blood_mix` | preset ∈ {india, us} × max_len ∈ {2, 3} × p ∈ {1.0, 0.8, 0.6}; n=100 (quick 40) | `Setting(label=f"{preset}_L{L}", preset=preset, max_len=L, p=p)` |
+| `female_sensitisation` | female_hs_share ∈ {0.1, 0.2, 0.3, 0.4} × p ∈ {1.0, 0.8}; n=100 (quick 40, shares {0.1, 0.4}) | `Setting(label=f"fhs_{s}", overrides=(("female_hs_share", s),), p=p)` |
+| `regions` | national vs 4 regional pools × p ∈ {1.0, 0.8}; n=200 (quick 60) | `Setting(label="national"/"regional", n=200, split_regions=False/True, p=p)` |
 
-All use `ExpectedTransplantScorer(p)` (failure-aware) and `compute_metrics` from the simulation owner. Seeds are `self.seed + k`.
+All use the defaults `solver="ilp"`, `scorer="expected"` (failure-aware). Pool i always has seed `seed + i`, so national and regional see the same pools, and the comparison is paired.
 
 ### Tasks
 
-- [ ] **G4.1** 🛠 `BloodMix`.
-- [ ] **G4.2** 🛠 `FemaleSensitisation`.
-- [ ] **G4.3** 🛠 `RegionSplit`.
+- [ ] **G4.1** 🛠 The three `SPEC`s (one short chat). Run each with `python -m donorbridge results --only <name> --quick`.
 - [ ] **G4.4** 🧑‍🏫 Read your results. Does India gain more or less from 3-way than the US? Is the gender gap in the matcher or in who enters the pool? (Plan.md risk: the gender result may be null or reversed. If so, present it as a finding.)
 - [ ] **G4.5** 🛠 Pool-statistics table for the slides (from `calibration_report`): India vs US in-pool mix.
 - [ ] Open PR by Sun 22 Nov, 6 pm. **Nothing new after the Mon 23 Nov freeze.**
 
 ### Prompts
 
-**G4.1–G4.3 🛠: experiments (one chat per experiment)**
+**G4.1 🛠: the three specs**
 
 ```text
 [context block]
 
-Implement donorbridge/experiments/<file>.py: class <Name>(Experiment) with name = "<name>".
-Settings: <paste that experiment's row from my table>. In quick mode use the quick sizes.
-For each setting and each pool k: pool = make_generator(preset, **overrides).generate(n, self.seed + k);
-solve with get_solver("ilp", max_cycle_len=L, scorer=ExpectedTransplantScorer(p));
-metrics = compute_metrics(pool, solution, UniformSurvival(p)); append one row.
-Return a DataFrame with exactly these columns: <paste columns>; write it to
-self.out_dir / f"{self.name}.csv". Print one progress line per setting.
-Here's the Experiment base class: <paste experiments/base.py>
-Here's PoolMetrics: <paste simulation/metrics.py PoolMetrics>
-Then write a quick-mode unit test that checks columns and row count.
+Write SPEC = GridSpec(...) for each of donorbridge/experiments/blood_mix.py,
+female_sensitisation.py and regions.py, from this table:
+<paste my three-row SPEC table>
+Build settings with list comprehensions, convert them to tuples, and fill in quick_settings and
+n_pools / quick_n_pools. No other code. Then give me a pandas snippet (for a notebook, not the package)
+that reads each CSV and prints the mean ± 95% CI of expected_transplants and the matched shares, by
+label and p.
 ```
 
 **G4.4 🧑‍🏫: interpret the results**
@@ -683,7 +733,9 @@ slide each.
 
 ### Integration checks that hit your code (Phase 4)
 
-`test_p4_generator_csvs` (columns, and national ≥ regional), plus `test_p4_e2e_results_quick`, which runs your experiments in quick mode.
+`test_p4_generator_specs` (national ≥ regional; both presets; all four shares), `test_p4_e2e_every_spec_nonempty`, plus `test_p4_e2e_results_quick`, which runs your specs in quick mode.
+
+**Freed-up time:** the specs take about an hour, so spend the rest of P4 on G4.4 (interpretation) and on helping the simulation owner get the charts right. That's where the impact is.
 
 ---
 
