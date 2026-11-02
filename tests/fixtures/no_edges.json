@@ -1,0 +1,11 @@
+{
+  "name": "no_edges",
+  "families": [
+    {"id": 2, "patient_blood": "O", "donor_blood": "A", "patient_sex": "F", "donor_sex": "M", "relation": "spouse", "patient_pra": 0.30, "region": 0},
+    {"id": 3, "patient_blood": "O", "donor_blood": "A", "patient_sex": "M", "donor_sex": "F", "relation": "other", "patient_pra": 0.10, "region": 1},
+    {"id": 5, "patient_blood": "O", "donor_blood": "A", "patient_sex": "F", "donor_sex": "M", "relation": "spouse", "patient_pra": 0.85, "region": 2},
+    {"id": 7, "patient_blood": "O", "donor_blood": "A", "patient_sex": "M", "donor_sex": "M", "relation": "other", "patient_pra": 0.20, "region": 3},
+    {"id": 11, "patient_blood": "O", "donor_blood": "A", "patient_sex": "F", "donor_sex": "F", "relation": "other", "patient_pra": 0.50, "region": 0}
+  ],
+  "edges": []
+}
