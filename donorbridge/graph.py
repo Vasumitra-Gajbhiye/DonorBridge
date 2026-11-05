@@ -19,6 +19,13 @@ class CompatibilityGraph:
 
     def __init__(self, pool: Pool) -> None:
         """Build successor/predecessor maps from pool.edges (ids are not indices)."""
+        self.pool = pool
+        self.gives_to = {fid: [] for fid in pool.ids()}       # i -> families i's donor can give to
+        self.receives_from = {fid: [] for fid in pool.ids()}  # j -> families whose donor can give to j
+        for i, j in pool.edges:
+            self.gives_to[i].append(j)
+            self.receives_from[j].append(i)
+        
         raise NotImplementedError("Matching, P1")
 
     def nodes(self) -> tuple[int, ...]:
