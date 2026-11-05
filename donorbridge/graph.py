@@ -26,8 +26,6 @@ class CompatibilityGraph:
             self.gives_to[i].append(j)
             self.receives_from[j].append(i)
         
-        raise NotImplementedError("Matching, P1")
-
     def nodes(self) -> tuple[int, ...]:
         """All family ids, sorted."""
         raise NotImplementedError("Matching, P1")
