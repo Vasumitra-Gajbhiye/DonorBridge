@@ -19,7 +19,18 @@ class CompatibilityGraph:
 
     def __init__(self, pool: Pool) -> None:
         """Build successor/predecessor maps from pool.edges (ids are not indices)."""
-        raise NotImplementedError("Matching, P1")
+        self.pool = pool
+        # Read ids from the families directly: Pool.ids() is still a Lead stub.
+        ids = sorted(f.id for f in pool.families)
+        succ: dict[int, list[int]] = {fid: [] for fid in ids}  # i -> families i's donor can give to
+        pred: dict[int, list[int]] = {fid: [] for fid in ids}  # j -> families whose donor can give to j
+        for i, j in pool.edges:
+            succ[i].append(j)
+            pred[j].append(i)
+        self._nodes: tuple[int, ...] = tuple(ids)
+        self._succ: dict[int, tuple[int, ...]] = {fid: tuple(sorted(v)) for fid, v in succ.items()}
+        self._pred: dict[int, tuple[int, ...]] = {fid: tuple(sorted(v)) for fid, v in pred.items()}
+        self._edges: frozenset[tuple[int, int]] = frozenset(pool.edges)
 
     def nodes(self) -> tuple[int, ...]:
         """All family ids, sorted."""
