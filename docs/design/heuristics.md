@@ -39,9 +39,11 @@ It ignores weights on purpose: it's the "no planning" baseline. Cost: O(R log R)
 
 ```text
 CONFLICT-COUNTS(rings):
-    rings_with[f] <- positions of the rings containing family f
-    for ring in rings:
-        conflicts[ring] <- |union of rings_with[f] for f in ring| - 1    # a set, so a ring sharing 2 families counts once
+    N[S] <- how many rings contain every family in S, for every subset S of every ring
+    for ring in rings:                                    # inclusion-exclusion over the ring's families
+        touching <- sum over nonempty subsets S of ring of (+1 if |S| odd, -1 if even) * N[S]
+        conflicts[ring] <- touching - 1                   # minus the ring itself
+    # for {a,b,c}: |A|+|B|+|C| - |A∩B| - |A∩C| - |B∩C| + |A∩B∩C|, so a ring sharing 2 families counts once
 
 GREEDY(rings):
     w <- self.weights(rings)
@@ -50,7 +52,12 @@ GREEDY(rings):
     return chosen, optimal = False, stats {rings_considered, rings_taken}
 ```
 
-The conflict tie-break prefers a ring that blocks fewer alternatives. Under count weights with rings of at most 3, greedy is at most 3 times worse than the optimum. Each chosen ring can block at most 3 optimal rings, one per family, and none of them is heavier than it, or greedy would have taken it first.
+The conflict tie-break prefers a ring that blocks fewer alternatives.
+
+**Guarantee: greedy gets at least 1/L of the optimum** (L = longest ring allowed, so 1/3 for L = 3), for any non-negative weights:
+- Take an optimal ring O that greedy didn't pick. When greedy reached O in its sorted order, O clashed with some ring G greedy had already taken, so w(G) ≥ w(O). Charge O to G.
+- The optimal rings are disjoint, so the ones that clash with G each use a different family of G. G has at most L families, so it gets at most L charges, each worth at most w(G).
+- So OPT ≤ L · (greedy's total). greedy_trap shows the gap is real: 3 against 4.
 
 ### Local search (2026-11-09)
 
@@ -284,8 +291,8 @@ First-come takes the swap every time, because it ignores weights. At p = 0.6 the
 
 ## Decisions
 
-1. **Ring positions, not `Cycle` objects, in hot loops.** Hashing `Cycle` dataclasses took 3.2 s for the conflict counts on a pool of 200 (23,143 rings). Ints are much cheaper. Positions are list indices of our own ring list, not family ids, so the "ids are not indices" rule still holds.
-2. **The conflict count costs more than O(total ring size).** A plain sum over a family → rings index double-counts a neighbour that shares two families. The set union fixes that, at the cost of O(Σ rings per family) per ring.
+1. **Ring positions, not `Cycle` objects, inside B&B.** The search reads ring weights and members millions of times, so B&B numbers the rings 0..R−1 and keeps plain lists. Positions are list indices of our own ring list, not family ids, so the "ids are not indices" rule still holds.
+2. **Conflict counts by inclusion–exclusion (corrected 2026-11-09).** A plain sum over a family → rings index double-counts a neighbour that shares two families. The first fix built a set of neighbours per ring, which took 2.95 s at n = 200 and 28 s at n = 300, because each ring touches about a thousand others. Counting the rings that contain each subset and combining the counts by inclusion–exclusion gives identical counts (checked on 480 ring lists, L = 2–4) in O(rings × 2^L): 0.17 s at n = 200 and 0.69 s at n = 300.
 3. **Zero-weight rings.** Greedy and first-come follow "take any ring that fits", so at p = 0 they may take rings worth 0. The objective is unchanged. Local search's ADD requires w > 0. B&B prunes them through the bound.
 4. **Tolerance.** Every "better" or "prune" test uses 1e-9: improve only if `> best + 1e-9`, prune if `bound <= best + 1e-9`. This avoids loops and wrong prunes caused by float rounding.
 5. **v1's exclude branch is a loop**, so Python's recursion depth stays at most n/2 (see v1).
