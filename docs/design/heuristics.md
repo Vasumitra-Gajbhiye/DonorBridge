@@ -48,7 +48,8 @@ CONFLICT-COUNTS(rings):
 GREEDY(rings):
     w <- self.weights(rings)
     order <- rings sorted by (-w, conflicts, families)
-    take each ring that fits, in that order (same loop as first-come)
+    take each ring that fits, in that order (same loop as first-come),
+        stopping at the first ring with w < 0 (it could only lower the total)
     return chosen, optimal = False, stats {rings_considered, rings_taken}
 ```
 
@@ -74,12 +75,12 @@ LOCAL-SEARCH(rings, time_limit):
         SWAP: for each chosen ring r (sorted):
                   candidates <- rings blocked only by r  +  free rings
                   S <- best set of <= 2 disjoint candidates (try singles and pairs, heaviest first)
-                  gain <- w(S) - w(r); keep the move if gain > 1e-9 and it beats the best so far
+                  gain <- w(S) - w(r); keep the move if gain > tol and it beats the best so far
         apply the single best move (best-improvement, deterministic)
     return chosen, optimal = False, stats {passes, moves, timed_out}
 ```
 
-- **Terminates:** every applied move raises the total weight by more than 1e-9, and there are finitely many solutions.
+- **Terminates:** every applied move raises the total weight by more than tol (= 1e-9 × the heaviest ring weight), and there are finitely many solutions.
 - **Pair search:** candidates are sorted heaviest first, so the pair loop can stop as soon as `w(a) + w(b)` can no longer beat the best set found.
 - **Where it gets stuck:** a move that needs two rings taken out at once (see the pool_8 trace).
 
@@ -87,6 +88,9 @@ LOCAL-SEARCH(rings, time_limit):
 
 ```text
 BNB-V1(rings, time_limit):
+    deadline <- now + time_limit                            # ONE deadline for everything below
+    rings <- rings with w >= 0                               # a negative ring is never in an optimal plan
+    tol   <- 1e-9 * (heaviest ring weight)                   # scaled, so tiny weights still count
     order <- rings sorted by (-w, families)
     best  <- GREEDY(rings)                                  # the incumbent
     EXPLORE(i = 0, value = 0)
@@ -94,7 +98,7 @@ BNB-V1(rings, time_limit):
 EXPLORE(i, value):
     while i < len(order):
         bound <- value + sum of w(c) for c in order[i:] that still fit
-        if bound <= best + 1e-9: pruned += 1; return          # nothing below here can win
+        if bound <= best + tol: pruned += 1; return           # nothing below here can win
         if order[i] fits:
             include it; if value + w > best: best <- this solution
             EXPLORE(i + 1, value + w)                        # branch 1: include ring i
@@ -110,7 +114,10 @@ EXPLORE(i, value):
 
 ```text
 BNB-V2(rings, time_limit):
-    best <- LOCAL-SEARCH(rings)                              # stronger incumbent than v1
+    deadline <- now + time_limit                            # ONE deadline, starting solution included
+    rings <- rings with w >= 0; tol <- 1e-9 * (heaviest ring weight)
+    best <- LOCAL-SEARCH(rings, time left until deadline)    # stronger incumbent than v1
+    if past deadline: return best, optimal = False           # the starting solution used up the budget
     available ring  = no family of it is decided yet
     EXPLORE(value = 0)
 
@@ -119,7 +126,7 @@ EXPLORE(value):
     U     <- families that still have at least one available ring
     if U is empty: return                                    # leaf
     bound <- value + SUM over u in U of  MAX over available c containing u of  w(c) / |c|
-    if bound <= best + 1e-9: pruned += 1; return
+    if bound <= best + tol: pruned += 1; return
     v <- the family in U with the FEWEST available rings (ties: smallest id)
     for each available ring c containing v, heaviest first:     # child type 1: v goes in ring c
         choose c; decide all of c's families
@@ -143,7 +150,7 @@ EXPLORE(value):
 - Split each ring's weight equally among its families: `w(c) = Σ over u in c of w(c)/|c|`.
 - Each family is in at most one chosen ring, so its share is at most `max over its available rings of w(c)/|c|`.
 - Families in no chosen ring contribute 0, which is less than that maximum.
-- So any completion's value is at most `value + Σ max-share`, the bound. Weights must be ≥ 0.
+- So any completion's value is at most `value + Σ max-share`, the bound. This needs weights ≥ 0, which is why B&B drops negative-weight rings first: such a ring can never be in an optimal plan, because removing it raises the total.
 
 **Why most-constrained-first:** a family with 1 available ring has only 2 children. Deciding it first keeps the tree narrow, and failures show up near the root.
 
@@ -184,7 +191,7 @@ flowchart TD
     A[Start: greedy solution] --> B[Find blockers of every ring]
     B --> C[Best ADD: heaviest free ring with w > 0]
     C --> D[For each chosen ring r: best set of at most 2<br/>rings blocked only by r or free]
-    D --> E{Best gain > 1e-9?}
+    D --> E{Best gain > tol?}
     E -- yes --> F[Apply the single best move]
     F --> G{Time left?}
     G -- yes --> B
@@ -202,7 +209,7 @@ flowchart TD
     C -- no --> D{Any family with an available ring?}
     D -- no --> L[Leaf: return to parent]
     D -- yes --> E[Bound = value + sum of best share per family]
-    E --> F{Bound <= best + 1e-9?}
+    E --> F{Bound <= best + tol?}
     F -- yes --> P[Prune: return to parent]
     F -- no --> G[Pick family v with fewest available rings]
     G --> H[For each available ring c with v, heaviest first:<br/>choose c, record if better, EXPLORE, undo]
@@ -294,8 +301,9 @@ First-come takes the swap every time, because it ignores weights. At p = 0.6 the
 1. **Ring positions, not `Cycle` objects, inside B&B.** The search reads ring weights and members millions of times, so B&B numbers the rings 0..R−1 and keeps plain lists. Positions are list indices of our own ring list, not family ids, so the "ids are not indices" rule still holds.
 2. **Conflict counts by inclusion–exclusion (corrected 2026-11-09).** A plain sum over a family → rings index double-counts a neighbour that shares two families. The first fix built a set of neighbours per ring, which took 2.95 s at n = 200 and 28 s at n = 300, because each ring touches about a thousand others. Counting the rings that contain each subset and combining the counts by inclusion–exclusion gives identical counts (checked on 480 ring lists, L = 2–4) in O(rings × 2^L): 0.17 s at n = 200 and 0.69 s at n = 300.
 3. **Zero-weight rings.** Greedy and first-come follow "take any ring that fits", so at p = 0 they may take rings worth 0. The objective is unchanged. Local search's ADD requires w > 0. B&B prunes them through the bound.
-4. **Tolerance.** Every "better" or "prune" test uses 1e-9: improve only if `> best + 1e-9`, prune if `bound <= best + 1e-9`. This avoids loops and wrong prunes caused by float rounding.
+4. **Tolerance, scaled to the weights (fixed after code review, 2026-11-10).** Every "better" or "prune" test uses `tol = 1e-9 × the heaviest ring weight`: improve only if `> best + tol`, prune if `bound <= best + tol`. That stops float rounding from causing endless loops or wrong prunes. The first version used a fixed 1e-9. With tiny weights (every family worth 1e-10), that swallowed the whole difference between 3e-10 and the optimum 4e-10, and B&B reported the wrong answer as optimal. When every weight is 0, tol is 0.
+4b. **Negative weights (fixed after code review, 2026-11-10).** The bounds assume w ≥ 0, and `Scorer` doesn't forbid negative weights. With rings worth 10 and −20, the first version reported −10 as optimal. Now greedy stops at the first negative ring (they are sorted last), local search never adds one (an ADD needs w > 0, and a swap only ever picks a positive-weight set), and B&B drops them before searching. An optimal plan never contains one, so B&B stays exact. Our scorers (count, expected, fair) never produce negative weights.
 5. **v1's exclude branch is a loop**, so Python's recursion depth stays at most n/2 (see v1).
-6. **Time limits.** B&B checks the clock every 64 nodes and unwinds with an exception. The incumbent is always saved as a copy, so a timeout returns a valid plan with `optimal=False`. Local search checks the clock once per chosen ring in a pass.
+6. **Time limits: one deadline (fixed after code review, 2026-11-10).** B&B sets its deadline once, then gives local search only the time left for building the starting solution. If that uses up the budget, B&B returns it straight away with `optimal=False`. The search checks the clock every 64 nodes and unwinds with an exception. The incumbent is always saved as a copy, so a timeout returns a valid plan. Local search checks the clock once per chosen ring in a pass. Greedy, which local search starts from, isn't timed, but it takes only 0.24 s at n = 200. Measured at n = 200: a 1 s limit takes 1.02–1.21 s, under the 1.5 s the playbook allows. Before the fix it took 1.14 s, and a 0.5 s limit took 0.76 s.
 7. **v2 keeps v1** behind a `version` class attribute, with `stats["version"]`, for the node-count comparison and the runtime chart.
 8. **Open:** whether to add the v3 price bound. Decide after measuring it against v2 on pools of 30–100, and tell the lead, since the playbook fixes the v2 bound.

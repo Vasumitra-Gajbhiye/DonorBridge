@@ -6,7 +6,7 @@ import pytest
 from conftest import load_fixture
 
 from donorbridge.models import BloodGroup, Cycle, Family, Pool, Relation, Sex
-from donorbridge.scoring import ExpectedTransplantScorer
+from donorbridge.scoring import ExpectedTransplantScorer, Scorer
 from donorbridge.solvers.greedy import GreedySolver, conflict_counts
 
 
@@ -74,6 +74,22 @@ def test_full_tie_goes_to_smallest_families() -> None:
     pool = make_pool([0, 1, 2], [(0, 1), (1, 0), (1, 2), (2, 1)])
     rings = [Cycle.of([1, 2]), Cycle.of([0, 1])]
     assert GreedySolver().solve(pool, cycles=rings).cycles == (Cycle.of([0, 1]),)
+
+
+def test_never_takes_a_ring_with_negative_weight() -> None:
+    # Our scorers never give negative weights, but a custom one could. Taking such a ring
+    # only lowers the total, so greedy stops at the first one (they are sorted last).
+    class SignedScorer(Scorer):
+        name = "signed"
+
+        def weight(self, cycle: Cycle, pool: Pool) -> float:
+            return -20.0 if cycle == Cycle.of([1, 2]) else 10.0
+
+    pool = load_fixture("greedy_trap")
+    rings = [Cycle.of([0, 3]), Cycle.of([1, 2])]
+    solution = GreedySolver(scorer=SignedScorer()).solve(pool, cycles=rings)
+    assert solution.cycles == (Cycle.of([0, 3]),)
+    assert solution.objective == pytest.approx(10.0)
 
 
 def test_empty_inputs() -> None:

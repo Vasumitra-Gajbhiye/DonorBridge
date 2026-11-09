@@ -29,6 +29,6 @@ Heuristics P1 work: `FirstComeSolver` and `GreedySolver` (`_solve` only), plus `
 
 ## Next steps
 
-1. Once the lead's L1.2–L1.4 are merged, run `uv run pytest tests/unit/test_first_come.py tests/unit/test_greedy.py tests/integration/test_phase1.py -k "heuristics or first_come or greedy" -rs`.
-2. Open the PR for both solvers and their tests by Thu 5 Nov, 6 pm.
+1. ~~Once the lead's L1.2–L1.4 are merged, run the heuristics tests~~ Done 2026-11-09: all unit tests pass on `main`'s real models, scoring and Solver base.
+2. ~~Open the PR by Thu 5 Nov, 6 pm~~ Done late: PR #6, opened 2026-11-09.
 3. P2, after `phase-1-done`: `LocalSearchSolver`, then branch and bound v1.

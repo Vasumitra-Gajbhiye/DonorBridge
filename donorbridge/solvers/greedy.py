@@ -61,6 +61,8 @@ class GreedySolver(Solver):
         chosen: list[Cycle] = []
         covered: set[int] = set()
         for ring in best_first:
+            if weight[ring] < 0:
+                break  # sorted heaviest first, so every ring from here on would only lower the total
             if covered.isdisjoint(ring.families):
                 chosen.append(ring)
                 covered.update(ring.families)
