@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
 from donorbridge.models import Cycle, Pool
-from donorbridge.survival import SurvivalModel
+from donorbridge.survival import SurvivalModel, UniformSurvival
 
 
 class Scorer(ABC):
@@ -24,7 +24,8 @@ class Scorer(ABC):
 
     def total(self, cycles: Iterable[Cycle], pool: Pool) -> float:
         """Sum of weight() over `cycles`."""
-        raise NotImplementedError("Lead, P1")
+        # Start at 0.0 so an empty plan totals 0.0 (a float), not the int 0.
+        return sum((self.weight(cycle, pool) for cycle in cycles), 0.0)
 
 
 class CountScorer(Scorer):
@@ -34,7 +35,7 @@ class CountScorer(Scorer):
 
     def weight(self, cycle: Cycle, pool: Pool) -> float:
         """Return len(cycle)."""
-        raise NotImplementedError("Lead, P1")
+        return float(len(cycle))
 
 
 class ExpectedTransplantScorer(Scorer):
@@ -43,8 +44,14 @@ class ExpectedTransplantScorer(Scorer):
     def __init__(self, survival: SurvivalModel | float = 1.0) -> None:
         """A float p means UniformSurvival(p). Name is "expected(p=<p>)" for uniform survival,
         else "expected(<ClassName>)"."""
-        raise NotImplementedError("Lead, P1")
+        if not isinstance(survival, SurvivalModel):
+            survival = UniformSurvival(survival)  # checks 0 <= p <= 1
+        self.survival: SurvivalModel = survival
+        if isinstance(survival, UniformSurvival):
+            self.name = f"expected(p={survival.p})"
+        else:
+            self.name = f"expected({type(survival).__name__})"
 
     def weight(self, cycle: Cycle, pool: Pool) -> float:
         """Return len(cycle) * survival.cycle(pool, cycle)."""
-        raise NotImplementedError("Lead, P1")
+        return len(cycle) * self.survival.cycle(pool, cycle)
