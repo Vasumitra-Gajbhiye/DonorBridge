@@ -1,6 +1,6 @@
 # Design · Heuristics
 
-Owner: Heuristics · Last updated: 2026-11-09
+Owner: Heuristics · Last updated: 2026-11-11
 
 The four rungs of the algorithm ladder, from cheapest to exact: **first-come → greedy → local search → branch and bound**. Every solver gets the list of candidate rings from `Solver.solve` and implements only `_solve(pool, cycles) -> (chosen, optimal, stats)`. Every comparison uses `w = self.weights(pool, cycles)`, never `len(c)`, so the solvers become failure-aware as soon as a different scorer is passed in.
 
@@ -10,8 +10,8 @@ The four rungs of the algorithm ladder, from cheapest to exact: **first-come →
 | --- | --- | --- | --- | --- |
 | `solvers/first_come.py` | `FirstComeSolver` (`"first-come"`) | False | P1 | Done, PR #6 |
 | `solvers/greedy.py` | `GreedySolver` (`"greedy"`), plus helper `conflict_counts` | False | P1 | Done, PR #6 |
-| `solvers/local_search.py` | `LocalSearchSolver` (`"local-search"`) | False | P2 | Designed below |
-| `solvers/branch_bound.py` | `BranchAndBoundSolver` (`"branch-bound"`), v1 and v2 | True | P2–P3 | Designed below |
+| `solvers/local_search.py` | `LocalSearchSolver` (`"local-search"`), plus helper `best_one_or_two` | False | P2 | Done, P2/P3 PR |
+| `solvers/branch_bound.py` | `BranchAndBoundSolver` (`"branch-bound"`), versions 1, 2 and 3 (default) | True | P2–P3 | Done, P2/P3 PR |
 | `experiments/optimality_gap.py`, `experiments/ring_length.py` | `SPEC` in each | | P4 | Not started |
 
 Words used below:
@@ -154,14 +154,51 @@ EXPLORE(value):
 
 **Why most-constrained-first:** a family with 1 available ring has only 2 children. Deciding it first keeps the tree narrow, and failures show up near the root.
 
-**Known weakness, found in testing (2026-11-03):**
-- On some pools of 30, the max-share bound is far from the optimum. One pool's optimum was 12 but the root bound was 27, and 3 of 30 pools timed out at 5 s with p = 0.7.
-- The cause is hub families: many families each claim their best share, but all their rings go through the same few hubs, which can only be used once.
-- **Planned fix (v3, not yet tested):** a "family price" bound.
-  - Give each family a price y_u ≥ 0 so that every available ring is paid for: `Σ over u in c of y_u ≥ w(c)`. Then any completion is worth at most `value + Σ y_u`, because each chosen ring is paid for by its own disjoint families. This is LP weak duality.
-  - Compute the prices in two passes. Busiest families go first and pay for whole rings. A reverse pass then trims any overpayment.
-  - Use `min(max-share bound, price bound)`.
-- Must be measured against v2 on pools of 30–100 before 16 Nov.
+### Branch and bound v3, the default (2026-11-11)
+
+v3 is v2 with one extra bound. Branching, bookkeeping and the incumbent are unchanged.
+
+**Why v2 wasn't enough:**
+- On 200 test pools of 30 at p = 0.7, v2's slowest 1% took 52.5 s, and the worst took 59 s.
+- On the hard pools its root bound was 20–50% above the optimum, while the LP relaxation was almost exactly the optimum: 23 vs 23 and 7.056 vs 7.056 on two of them.
+- The cause is hub families. Many families each claim their best share, but all their rings go through the same few hubs, which can be used only once.
+
+**The toll (Lagrangian) bound:**
+
+```text
+TOLL-BOUND(value, steps):                    # tolls λ[u] >= 0, kept between nodes (warm start)
+    repeat `steps` times:
+        profit(c) <- w(c) - Σ over u in c of λ[u]     for every available ring c
+        L <- Σ over undecided u of λ[u]  +  Σ over available c of max(0, profit(c))
+        best <- min(best, L)
+        if value + best <= incumbent + tol: stop      # good enough to prune
+        g[u] <- 1 - (how many rings with profit > 0 contain u)        # the slope of L in λ[u]
+        λ[u] <- max(0, λ[u] - step * g[u]),  step = (L - (incumbent - value)) / Σ g[u]²
+    return value + best
+```
+
+**Why the bound is valid, for ANY tolls λ ≥ 0:**
+- Take any set of disjoint available rings. Each ring's weight is its profit plus the tolls of its own families: `w(c) = profit(c) + Σ over u in c of λ[u]`.
+- Add this over the chosen rings. Each family is in at most one chosen ring, so the tolls add up to at most `Σ over all undecided u of λ[u]`.
+- Each profit is at most `max(0, profit)`.
+- So the set is worth at most L. This is why the tolls can be moved freely and kept from node to node: no choice of tolls can make the bound wrong.
+
+**How the pieces fit together:**
+- Starting tolls are each family's best share, so v3's first bound equals v2's. The toll steps can only bring the bound down from there, and v3 uses `min(v2 bound, toll bound)`.
+- The steps are subgradient steps. A family no profitable ring uses has its toll lowered; a family several profitable rings want has it raised. That drives the bound towards the LP relaxation.
+- 100 steps run at the root and 10 at every other node. More steps per node gave fewer nodes but a slower run overall: 30 steps was 1.6× slower on the hardest pools.
+- **Rounding:** with whole-number weights (the count scorer), every plan's total is a whole number, so a bound of 23.4 means "at most 23". v3 rounds the bound down in that case.
+
+**Measured on 200 pools each (the same pools for both, 60 s limit, 0 timeouts for either):**
+
+| Pools | v2: median / slowest 1% / worst | v3: median / slowest 1% / worst |
+| --- | --- | --- |
+| n = 20, count | 0.001 / 0.03 / 0.07 s | 0.003 / 0.01 / 0.02 s |
+| n = 20, p = 0.7 | 0.001 / 0.09 / 0.23 s | 0.005 / 0.08 / 0.19 s |
+| n = 30, count | 0.015 / 7.80 / 17.85 s | 0.007 / 0.03 / **0.96 s** |
+| n = 30, p = 0.7 | 0.028 / 52.5 / 59.3 s | 0.032 / 1.65 / **23.0 s** |
+
+At n = 50, v3 proved the optimum on 14 of 15 pools (count) and 11 of 15 (p = 0.7) within 20 s, where v2 managed 7 and 2. At n = 100, neither proves the optimum within 30 s, and both return their best plan with `optimal=False`. The test pools imitate blood groups and PRA, because the real generator wasn't merged yet.
 
 ## Flowchart
 
@@ -199,7 +236,7 @@ flowchart TD
     E -- no --> H
 ```
 
-### Branch and bound v2
+### Branch and bound v2 and v3
 
 ```mermaid
 flowchart TD
@@ -208,7 +245,7 @@ flowchart TD
     C -- yes --> Z[Return incumbent, optimal=False]
     C -- no --> D{Any family with an available ring?}
     D -- no --> L[Leaf: return to parent]
-    D -- yes --> E[Bound = value + sum of best share per family]
+    D -- yes --> E[Bound = value + sum of best share per family<br/>v3: min with toll bound, rounded down for whole weights]
     E --> F{Bound <= best + tol?}
     F -- yes --> P[Prune: return to parent]
     F -- no --> G[Pick family v with fewest available rings]
@@ -279,22 +316,14 @@ First-come takes the swap every time, because it ignores weights. At p = 0.6 the
 - `empty` and `no_edges`: 0 rings.
 - `optimal is False`, the stats, the same answer whatever the input order, and the input list left unchanged.
 
-**P2, planned:**
-1. Local search: trap → 4; ring_vs_swap under all 3 scorers.
-2. Local search ≥ greedy on 50 random pools, and ≤ the optimum.
-3. Local search on pool_8 (count) → 6, stuck, with `stats["moves"] == 0`.
-4. Local search returns a valid plan and `timed_out` when `time_limit_s` is tiny.
-5. B&B v1: trap → 4 with `optimal is True`; pool_8 → 7; ring_vs_swap at p = 0.6 and 0.9.
-6. B&B v1 equals brute force on random pools of ≤ 12 families, under count, expected and arbitrary weights including 0.
-7. B&B v1 stats on the trap: `nodes == 7`, `pruned == 2`.
-8. All weights 0 (p = 0): objective 0 under every solver, no crash.
-
-**P3, planned:**
-1. v2 equals the ILP on 50 pools each of 20 and 30, under both scorers (slow).
-2. Time limit: n = 200 with `time_limit_s=1` returns a valid plan in under 1.5 s, with `optimal is False` and `timed_out`.
-3. v2 explores fewer nodes than v1 over 10 pools of 20. In testing, it was 353 against 6,022.
-4. The root bound is ≥ the optimum on every test pool. The bound is never below the true value.
-5. ring_vs_swap: p = 0.6 picks the swap and p = 0.9 the ring, also with `SensitisationSurvival`.
+**P2 and P3, done:** `tests/unit/test_local_search.py` (10 tests) and `tests/unit/test_branch_bound.py` (24, of which 3 are marked slow). Brute force over all disjoint sets is the oracle in the tests.
+- Local search: trap → 4 in 1 move; pool_8 stuck at 6 with 0 moves; ring_vs_swap under all 3 scorers; between greedy and the optimum on 60 random pools × 3 scorers; `best_one_or_two`; tiny weights still improve; a 0 s time limit gives a valid plan; all weights 0; empty inputs; stats and repeatability.
+- B&B, every version (1, 2, 3):
+  - fixtures: trap 4, pool_8 7 (L = 3) and 4 (L = 2), ring_vs_swap at p = 0.6 and 0.9;
+  - equals brute force on 40 random pools × 4 scorers (count, p = 0.6, p = 0.9, arbitrary weights including 0);
+  - tiny weights give 4e-10; negative weights are never chosen; all weights 0 and empty inputs work;
+  - n = 200 with a 1 s limit stays under 1.5 s, with `optimal` exactly matching "didn't time out" (slow test).
+- B&B, one version: v1's trace on the trap (7 nodes, 2 prunes); v3 ≤ v2 < v1 nodes on 15 pools; the root bound is never below the optimum (v2 and v3); a 0 s time limit; the stats keys.
 
 ## Decisions
 
@@ -305,5 +334,5 @@ First-come takes the swap every time, because it ignores weights. At p = 0.6 the
 4b. **Negative weights (fixed after code review, 2026-11-10).** The bounds assume w ≥ 0, and `Scorer` doesn't forbid negative weights. With rings worth 10 and −20, the first version reported −10 as optimal. Now greedy stops at the first negative ring (they are sorted last), local search never adds one (an ADD needs w > 0, and a swap only ever picks a positive-weight set), and B&B drops them before searching. An optimal plan never contains one, so B&B stays exact. Our scorers (count, expected, fair) never produce negative weights.
 5. **v1's exclude branch is a loop**, so Python's recursion depth stays at most n/2 (see v1).
 6. **Time limits: one deadline (fixed after code review, 2026-11-10).** B&B sets its deadline once, then gives local search only the time left for building the starting solution. If that uses up the budget, B&B returns it straight away with `optimal=False`. The search checks the clock every 64 nodes and unwinds with an exception. The incumbent is always saved as a copy, so a timeout returns a valid plan. Local search checks the clock once per chosen ring in a pass. Greedy, which local search starts from, isn't timed, but it takes only 0.24 s at n = 200. Measured at n = 200: a 1 s limit takes 1.02–1.21 s, under the 1.5 s the playbook allows. Before the fix it took 1.14 s, and a 0.5 s limit took 0.76 s.
-7. **v2 keeps v1** behind a `version` class attribute, with `stats["version"]`, for the node-count comparison and the runtime chart.
-8. **Open:** whether to add the v3 price bound. Decide after measuring it against v2 on pools of 30–100, and tell the lead, since the playbook fixes the v2 bound.
+7. **All three versions stay in one class** behind a `version` class attribute (default 3), with `stats["version"]`, for the node-count comparison and the runtime chart. v2 is the playbook's bound, unchanged.
+8. **v3 (toll bound) is the default (decided 2026-11-11).** The playbook fixes the v2 bound, so this needs the lead's OK. The case for it: at n = 30, the slowest 1% of pools drop from 52.5 s to 1.65 s (p = 0.7) and from 7.8 s to 0.03 s (count), and v3 agrees with brute force and the ILP on every test pool. An earlier "family price" bound was tried first and replaced: it helped at n = 50, but did nothing for the hardest pools of 30.
