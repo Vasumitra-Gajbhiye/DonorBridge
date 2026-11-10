@@ -1,0 +1,34 @@
+# 01 · P1 first-come and greedy (H1.1–H1.4)
+
+Date: 2026-11-05
+
+## What was asked
+
+Heuristics P1 work: `FirstComeSolver` and `GreedySolver` (`_solve` only), plus `tests/unit/test_first_come.py` and `tests/unit/test_greedy.py`. The heuristics owner asked the AI to write the code to study from. On 2026-11-09 they asked the AI to put the files into the repo directly instead of typing them by hand.
+
+## What was done
+
+- **`solvers/first_come.py`:** sorts rings by `(max id, len, families)` and takes each ring that doesn't share a family with one already taken. It ignores the scorer on purpose. Stats: `rings_considered`, `rings_taken`.
+- **`solvers/greedy.py`:** sorts by `(-weight, conflicts, families)` using `self.weights`, never `len`, then takes each ring that still fits. A module-level helper, `conflict_counts(cycles)`, counts the distinct other rings that share a family with each ring. Stats match first-come's.
+- **Unit tests:**
+  - 7 for first-come: the trap, ignoring weights, the arrival tie-break, non-contiguous ids, empty inputs, stats and repeatability, and not mutating the input list.
+  - 8 for greedy: the trap gives 3, ring_vs_swap under count / p=0.6 / p=0.9, conflict counts, a neighbour sharing two families counted once, the conflict tie-break, the families tie-break, empty inputs, stats and repeatability.
+  - Rings are passed in through `cycles=`, so neither file depends on the cycle finder.
+
+## Deviations and things to note
+
+- **First-come scores 4 on greedy_trap, not 3.** By arrival order, (1,2) is taken before (0,1,2), so first-come happens to hit the optimum. The tests assert 4. Only greedy is expected to fall into the trap.
+- **Correction (2026-11-09): the conflict count now uses inclusion–exclusion.** A plain sum over a family → rings index counts a neighbour twice when it shares two families. The first version fixed that with a set union per ring, and this report blamed its slowness on hashing `Cycle` objects. Measuring on the lead's real models showed that diagnosis was wrong: switching to ring positions only went from 4.14 s to 3.15 s at n = 200 (23,143 rings). The real cost was building a set of about a thousand neighbours for every ring. The current version counts the rings that contain each subset of a ring's families, then combines the counts by inclusion–exclusion. That costs O(rings × 2^L), so H1.1's "O(total ring size)" was right after all. It gave identical counts on 480 ring lists (L = 2, 3, 4), and greedy now takes 0.24 s at n = 200 and 0.94 s at n = 300, down from 3.11 s and about 28 s.
+- **Rings of weight 0 are still taken.** At p=0, greedy takes zero-weight rings at the end, as the rule "take each ring that is disjoint" says. The objective is unaffected.
+- **Not yet tested against the real contract.** `models.py`, `scoring.py`, `survival.py` and `solvers/base.py` were still stubs on `main` (665a905). The code was checked in a throwaway copy with test-only stand-ins for those stubs and for `find_cycles`:
+  - 15 of 15 unit tests pass.
+  - `test_p1_heuristics_greedy_on_fixtures` and `test_p1_e2e_solver_names_resolve` pass, also with `--gate`.
+  - `test_p1_heuristics_first_come_valid` skips at the generator stub, after its fixture part has passed.
+- **Test rings are built inside functions** (`trap_rings()`, `ring_vs_swap_rings()`), not as module constants. The first version built them at import time. While `Cycle.of` is a stub, that crashed pytest's collection step, which the conftest skip hook doesn't cover: CI showed 2 errors instead of skips. With the functions, the tests skip cleanly on the current `main` (`5 passed, 33 skipped` for the whole suite).
+- **Earlier cross-check:** the same logic matched brute force on 1,200 random pool/scorer pairs. Greedy and first-come never beat the optimum.
+
+## Next steps
+
+1. ~~Once the lead's L1.2–L1.4 are merged, run the heuristics tests~~ Done 2026-11-09: all unit tests pass on `main`'s real models, scoring and Solver base.
+2. ~~Open the PR by Thu 5 Nov, 6 pm~~ Done late: PR #6, opened 2026-11-09.
+3. P2, after `phase-1-done`: `LocalSearchSolver`, then branch and bound v1.
